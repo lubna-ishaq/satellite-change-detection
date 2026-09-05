@@ -45,26 +45,3 @@ Values range from -1.0 to +1.0:
 ├── app.py         # Interactive Streamlit web application
 ├── .gitignore     # Git exclusion rules
 └── README.md      # Project documentation
-
-
-
-1.Environment Setup
-
-# Clone repository
-git clone [https://github.com/lubna-ishaq/satellite-change-detection.git](https://github.com/lubna-ishaq/satellite-change-detection.git)
-cd satellite-change-detection
-
-# Create and activate virtual environment (Windows PowerShell)
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-
-# Install dependencies
-pip install streamlit odc-stac planetary-computer pystac-client matplotlib numpy
-
-2. Execution Commands
-
-# Run standalone backend script to generate static plot
-python main.py
-
-# Launch interactive web interface locally
-streamlit run app.py
