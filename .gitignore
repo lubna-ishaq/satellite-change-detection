@@ -2,3 +2,6 @@ venv/
 __pycache__/
 *.png
 .DS_Store
+
+# Erlaube das Vergleichsbild
+!change_detection_vergleich.png
