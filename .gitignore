@@ -1,7 +1,23 @@
 venv/
+.venv/
 __pycache__/
-*.png
+*.py[cod]
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ruff_cache/
 .DS_Store
 
-# Erlaube das Vergleichsbild
+# Generated figures are ignored, except the README header image which is
+# regenerated with:
+#   python main.py --baseline-year 2021 --comparison-year 2024 \
+#       --aoi "Neusiedler See, Austria" --max-scenes 4
+*.png
 !change_detection_vergleich.png
+
+# Build outputs and exported archives, never sources.
+*.zip
+*.patch
+*.tif
+*.tiff

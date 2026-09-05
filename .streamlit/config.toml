@@ -1,0 +1,16 @@
+# Streamlit Community Cloud reads this file automatically.
+
+[theme]
+base = "light"
+primaryColor = "#2166ac"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f2f5f7"
+textColor = "#1b1f23"
+
+[server]
+# Satellite rasters are large; keep uploads small since this app has none.
+maxUploadSize = 5
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false

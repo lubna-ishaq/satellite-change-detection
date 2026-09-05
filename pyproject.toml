@@ -1,0 +1,18 @@
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    "error::RuntimeWarning",
+]
+
+[tool.coverage.run]
+source = ["ndvi_core", "data_access", "plotting", "export", "geocoding", "validation"]
+omit = ["tests/*"]
+
+[tool.ruff]
+line-length = 90
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

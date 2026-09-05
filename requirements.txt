@@ -1,11 +1,19 @@
-# Lower bounds are pinned deliberately: the geospatial stack moves fast and
-# an unpinned odc-stac / rasterio pair is the most common way this pipeline
-# breaks months after it was last touched.
+# Pinned to the versions this project is tested against.
+#
+# The odc-stac floor matters: releases below 0.5 import `dask.base.quote`,
+# which dask removed in 2025. Pairing odc-stac 0.3.x with a current dask
+# fails at import time with "cannot import name 'quote' from 'dask.base'".
+#
+# This file is also the Streamlit Community Cloud manifest, so it must stay
+# limited to what the hosted app actually needs.
 numpy>=1.26,<3
 matplotlib>=3.8,<4
 streamlit>=1.36,<2
-pystac-client>=0.8,<0.9
+pystac-client>=0.8,<1
 planetary-computer>=1.0,<2
-odc-stac>=0.3.10,<0.4
-odc-geo>=0.4.7,<0.6
+odc-stac>=0.5,<0.6
+odc-geo>=0.5,<0.6
 rasterio>=1.3,<2
+requests>=2.31,<3
+folium>=0.16,<1
+streamlit-folium>=0.21,<1
