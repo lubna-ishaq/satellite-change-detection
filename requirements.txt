@@ -1,6 +1,11 @@
-streamlit
-odc-stac
-planetary-computer
-pystac-client
-matplotlib
-numpy
+# Lower bounds are pinned deliberately: the geospatial stack moves fast and
+# an unpinned odc-stac / rasterio pair is the most common way this pipeline
+# breaks months after it was last touched.
+numpy>=1.26,<3
+matplotlib>=3.8,<4
+streamlit>=1.36,<2
+pystac-client>=0.8,<0.9
+planetary-computer>=1.0,<2
+odc-stac>=0.3.10,<0.4
+odc-geo>=0.4.7,<0.6
+rasterio>=1.3,<2
