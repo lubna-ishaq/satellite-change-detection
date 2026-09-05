@@ -1,5 +1,9 @@
 # Sentinel-2 Satellite Change Detection System
 
+[![CI Tests](https://github.com/lubna-ishaq/satellite-change-detection/actions/workflows/tests.yml/badge.svg)](https://github.com/lubna-ishaq/satellite-change-detection/actions/workflows/tests.yml)
+
+![Satellite Change Detection Output](change_detection_vergleich.png)
+
 An end-to-end geospatial data processing pipeline and web interface for detecting vegetation index shifts and land cover alterations over time using European Space Agency (ESA) Sentinel-2 multispectral satellite imagery.
 
 ## Overview
