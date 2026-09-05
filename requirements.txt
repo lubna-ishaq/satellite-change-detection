@@ -1,0 +1,6 @@
+streamlit
+odc-stac
+planetary-computer
+pystac-client
+matplotlib
+numpy
