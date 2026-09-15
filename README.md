@@ -1,6 +1,6 @@
 # Sentinel-2 Satellite Change Detection
 
-[![CI Tests](https://github.com/lubna-ishaq/satellite-change-detection/actions/workflows/tests.yml/badge.svg)](https://github.com/lubna-ishaq/satellite-change-detection/actions/workflows/tests.yml)
+## Example Output
 
 ![Satellite Change Detection Output](change_detection_vergleich.png)
 
@@ -8,7 +8,9 @@ Compares two seasons of Sentinel-2 imagery and shows what changed. Vegetation
 (NDVI), open water (NDWI) or burn scars (NBR). Runs as a Streamlit app or from
 the command line, and exports a GeoTIFF you can drop into QGIS.
 
-Imagery comes from the Microsoft Planetary Computer, which is free and availabe to the public.
+Imagery comes from the Microsoft Planetary Computer, which is free and available to the public.
+
+The project validates its results against documented wildfires, reservoir loss events and a negative-control desert region to detect calibration bias.
 
 The picture above:
 
@@ -16,89 +18,63 @@ The picture above:
 python main.py --baseline-year 2021 --comparison-year 2024 \
     --aoi "Neusiedler See, Austria" --max-scenes 4
 ```
+## Pipeline Overview
 
-## Setup
-
-```bash
-git clone https://github.com/lubna-ishaq/satellite-change-detection.git
-cd satellite-change-detection
-
-python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-
-streamlit run app.py     # the app
-python main.py --help    # the CLI
-python validation.py     # check it against real events
+```text
+Sentinel-2 Search
+        │
+        ▼
+Scene Selection
+        │
+        ▼
+SCL Cloud Masking
+        │
+        ▼
+Seasonal Median Composite
+        │
+        ▼
+NDVI / NDWI / NBR
+        │
+        ▼
+Delta Calculation
+        │
+        ▼
+Change Detection
+        │
+        ▼
+GeoTIFF Export
 ```
 
-## The indices
+## Features
 
-All three are normalised differences, `(a - b) / (a + b)`:
+### Data Access
 
-| | Bands | What it shows | A negative delta means |
-| --- | --- | --- | --- |
-| NDVI | B08, B04 | vegetation | vegetation lost |
-| NDWI | B03, B08 | open water | water lost |
-| NBR | B08, B12 | burn severity | burned |
+- Sentinel-2 L2A imagery from the Microsoft Planetary Computer
+- Place-name search via OpenStreetMap Nominatim
+- Custom bounding boxes or predefined areas of interest
 
-Careful with NBR: this pipeline always computes *comparison minus baseline*, so
-a fire is a negative number. The dNBR you see in papers is the other way round.
+### Processing
 
-## Problems along the way
+- Seasonal median compositing
+- Pixel-level cloud masking using the Scene Classification Layer
+- NDVI, NDWI and NBR support
+- Automatic grid alignment across years
+- Per-tile scene selection
+- Adaptive thresholding based on observation scatter
 
-Most of the work here went into four problems. They all produce output that
-looks completely reasonable and is wrong.
+### Output
 
-**The reflectance offset.** Since ESA Processing Baseline 04.00 — anything
-acquired from 2022-01-25 — L2A reflectance is stored with -1000 added to it. An
-index is a ratio, so this does *not* cancel out. Compare 2021 against 2024
-without fixing it and you get a smooth bias across the whole scene that looks
-exactly like real land cover change. This was the first version of this project
-and the reason the header image had to be redone.
+- Streamlit dashboard
+- Command-line interface
+- GeoTIFF export
+- Observation count layer
+- Processing metadata
 
-**Cloud cover is per scene, not per pixel.** `eo:cloud_cover < 10%` tells you
-nothing about the pixel you care about. Everything goes through the Scene
-Classification Layer: cloud, cirrus, shadow, snow, saturated, no-data all get
-dropped. Water is kept deliberately, since a shrinking lake is the point.
+### Quality Control
 
-**Two years, two grids.** Scenes from different years can sit on different
-tiles and different native grids. Both seasons get loaded onto one GeoBox in
-the local UTM zone, so pixel (i, j) is the same patch of ground in both. If
-that ever breaks, `calculate_index_delta` raises instead of quietly
-broadcasting garbage. UTM and not Web Mercator, by the way — a "20 m" pixel in
-EPSG:3857 is about 13.6 m on the ground at 47° N.
-
-**Scene budgets are per tile.** If your area is
-wider than about 110 km it spans several Sentinel-2 tiles, and sorting all
-candidates by cloud cover can hand you four scenes that all belong to the same
-tile. The rest of your area then has no data at all, gets masked out, and the
-result still looks fine, until you notice the valid-pixel fraction is 23 % and
-there's a suspiciously straight edge in the delta.
-
-Two smaller things: NaN is the no-data value everywhere, never 0 (0 is a
-perfectly good NDVI for bare soil, and using it as a flag poisons every
-average), and the index is a median across several scenes rather than a single
-date, because one date mostly measures that day's weather.
-
-## Pixels
-
-Each composite carries two extra layers: how many scenes actually reached each
-pixel, and how much those scenes disagreed.
-
-The count ships as band 2 of the GeoTIFF. A pixel built from one observation
-looks identical to one built from six in the composite itself, which is not
-great.
-
-The disagreement feeds `--adaptive-threshold`, which swaps the fixed ±0.1 for
-`sigma × scatter` per pixel. One constant is wrong twice over: too low on noisy
-bare ground, too high over a stable canopy where a small real change gets
-buried. Pixels with too few observations to measure scatter get the scene's
-typical threshold rather than the floor, giving the worst-observed pixels the
-easiest bar would be backwards.
-
-The composites also report their mean day-of-year, and warn if the two are more
-than three weeks apart. A mid-June composite against a late-August one is
-measuring the growing season at least as much as it's measuring change.
+- Validation against documented real-world events
+- Negative control region for bias detection
+- 157 automated tests
 
 ## Does it actually work
 
@@ -135,6 +111,90 @@ imagery budget than the others (40 % cloud, 6 scenes per tile), there just
 aren't many clean scenes over that region.
 
 The boxes are approximate. Check them on a map before quoting any number.
+
+## Setup
+
+```bash
+git clone https://github.com/lubna-ishaq/satellite-change-detection.git
+cd satellite-change-detection
+
+python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+
+streamlit run app.py     # the app
+python main.py --help    # the CLI
+python validation.py     # check it against real events
+```
+
+## Spectral Indices
+
+All three are normalised differences, `(a - b) / (a + b)`:
+
+| | Bands | What it shows | A negative delta means |
+| --- | --- | --- | --- |
+| NDVI | B08, B04 | vegetation | vegetation lost |
+| NDWI | B03, B08 | open water | water lost |
+| NBR | B08, B12 | burn severity | burned |
+
+Careful with NBR: this pipeline always computes *comparison minus baseline*, so
+a fire is a negative number. The dNBR you see in papers is the other way round.
+
+## Engineering Challenges
+
+Most of the work here went into four problems. They all produce output that
+looks completely reasonable and is wrong.
+
+**The reflectance offset.** Since ESA Processing Baseline 04.00 — anything
+acquired from 2022-01-25 — L2A reflectance is stored with -1000 added to it. An
+index is a ratio, so this does *not* cancel out. Compare 2021 against 2024
+without fixing it and you get a smooth bias across the whole scene that looks
+exactly like real land cover change. This was the first version of this project
+and the reason the header image had to be redone.
+
+**Cloud cover is per scene, not per pixel.** `eo:cloud_cover < 10%` tells you
+nothing about the pixel you care about. Everything goes through the Scene
+Classification Layer: cloud, cirrus, shadow, snow, saturated, no-data all get
+dropped. Water is kept deliberately, since a shrinking lake is the point.
+
+**Two years, two grids.** Scenes from different years can sit on different
+tiles and different native grids. Both seasons get loaded onto one GeoBox in
+the local UTM zone, so pixel (i, j) is the same patch of ground in both. If
+that ever breaks, `calculate_index_delta` raises instead of quietly
+broadcasting garbage. UTM and not Web Mercator, by the way — a "20 m" pixel in
+EPSG:3857 is about 13.6 m on the ground at 47° N.
+
+**Scene budgets are per tile.** If your area is
+wider than about 110 km it spans several Sentinel-2 tiles, and sorting all
+candidates by cloud cover can hand you four scenes that all belong to the same
+tile. The rest of your area then has no data at all, gets masked out, and the
+result still looks fine, until you notice the valid-pixel fraction is 23 % and
+there's a suspiciously straight edge in the delta.
+
+Two smaller things: NaN is the no-data value everywhere, never 0 (0 is a
+perfectly good NDVI for bare soil, and using it as a flag poisons every
+average), and the index is a median across several scenes rather than a single
+date, because one date mostly measures that day's weather.
+
+## Reliability Metrics
+
+Each composite carries two extra layers: how many scenes actually reached each
+pixel, and how much those scenes disagreed.
+
+The count ships as band 2 of the GeoTIFF. A pixel built from one observation
+looks identical to one built from six in the composite itself, which is not
+great.
+
+The disagreement feeds `--adaptive-threshold`, which swaps the fixed ±0.1 for
+`sigma × scatter` per pixel. One constant is wrong twice over: too low on noisy
+bare ground, too high over a stable canopy where a small real change gets
+buried. Pixels with too few observations to measure scatter get the scene's
+typical threshold rather than the floor, giving the worst-observed pixels the
+easiest bar would be backwards.
+
+The composites also report their mean day-of-year, and warn if the two are more
+than three weeks apart. A mid-June composite against a late-August one is
+measuring the growing season at least as much as it's measuring change.
+
 
 ## Exporting
 
@@ -187,9 +247,21 @@ suggesting a coarser resolution.
 - SCL misses thin cloud edges and struggles with shadow over water.
 - The default season is northern-hemisphere summer. Use `--season` elsewhere.
 - Place search goes through OSM Nominatim, which is for interactive lookups
-  only — don't hammer it.
+  only.
 
-## Development
+## Development and Testing
+
+157 automated tests.
+
+The test suite runs completely offline. STAC access, imagery retrieval and
+geocoding are all stubbed for deterministic testing.
+
+```bash
+pytest --cov
+```
+
+`validation.py` is intentionally excluded from CI because it performs real
+online retrieval against external services.
 
 ```bash
 pip install -r requirements-dev.txt
@@ -197,9 +269,15 @@ ruff check . && ruff format --check .
 pytest --cov
 ```
 
-157 tests, no network needed — STAC, imagery and geocoding are all stubbed.
-`validation.py` is the only part that goes online, and it's deliberately kept
-out of CI.
+## Future Work
+
+Possible future extensions:
+
+- Multi-year trend analysis
+- Additional spectral indices
+- Interactive before/after comparison
+- Time-series visualisation
+- Automated reporting
 
 ## Stack
 
