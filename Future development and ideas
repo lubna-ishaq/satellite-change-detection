@@ -1,0 +1,20 @@
+Delete this before going public witht he project 
+
+
+Beschreibung:
+
+KI erkennt Veränderungen in Satellitenbildern.
+
+Features:
+
+- Waldrodung
+- Städtewachstum
+- Überschwemmungen
+- Infrastrukturentwicklung
+
+Technologien:
+
+- Python
+- Rasterio
+- GeoPandas
+- Deep Learning
