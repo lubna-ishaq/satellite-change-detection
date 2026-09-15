@@ -1,4 +1,4 @@
-"""Geocoding: parsing and bbox shaping, with the network stubbed out."""
+"""Tests for the place search (no real requests)."""
 
 import pytest
 import requests
@@ -39,11 +39,11 @@ def _stub(monkeypatch, payload, capture=None):
     monkeypatch.setattr(geocoding.requests, "get", fake_get)
 
 
-# --- bbox shaping --------------------------------------------------------
+# bbox shaping
 
 
 def test_a_tiny_place_is_widened_to_a_usable_window():
-    """A village returns a few-hundred-metre box, too small to analyse."""
+    """A village box is only a few hundred metres, so it gets enlarged."""
     west, south, east, north = _clamp_bbox(15.4400, 47.0700, 15.4405, 47.0705)
     assert east - west == pytest.approx(MIN_SPAN_DEG, abs=1e-6)
     assert north - south == pytest.approx(MIN_SPAN_DEG, abs=1e-6)
@@ -71,7 +71,7 @@ def test_latitude_never_leaves_the_globe():
     assert south >= -90.0 and north <= 90.0
 
 
-# --- request and parsing -------------------------------------------------
+# request and parsing
 
 
 def test_result_order_is_converted_from_nominatim(monkeypatch):

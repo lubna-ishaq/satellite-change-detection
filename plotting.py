@@ -1,4 +1,4 @@
-"""Shared figure construction for the CLI and the Streamlit app."""
+"""Builds the comparison figure. Used by both the CLI and the Streamlit app."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from ndvi_core import DEFAULT_INDEX, SpectralIndex, get_index
 INDEX_CMAP = "YlGn"
 DELTA_CMAP = "RdBu"
 
-#: Masked pixels are drawn in a neutral grey so cloud gaps are visibly
-#: different from "no change" rather than blending into the colour ramp.
+# Masked pixels (clouds etc.) are drawn grey so they don't look like
+# "no change" in the colour scale.
 NODATA_COLOR = "#d9d9d9"
 
 
@@ -36,11 +36,11 @@ def build_comparison_figure(
     index: str | SpectralIndex | None = None,
     delta_limit: float = 0.5,
 ):
-    """Three-panel baseline / comparison / delta figure.
+    """Figure with three panels: baseline, comparison and delta.
 
-    Both index panels share one colour scale so they can be read against each
-    other, and the delta panel is symmetric around zero so that red and blue
-    represent equal magnitudes.
+    The first two panels use the same colour scale so they can be compared.
+    The delta scale is symmetric around 0, so red and blue of the same
+    strength mean the same amount of change.
     """
     spec = _resolve(index)
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
@@ -74,7 +74,7 @@ def build_comparison_figure(
 
 
 def format_statistics(stats: dict, index: str | SpectralIndex | None = None) -> str:
-    """Render :func:`ndvi_core.change_statistics` output as readable text."""
+    """Turn the dict from change_statistics into text for the terminal."""
     if not stats["valid_pixels"]:
         return "No valid pixels: every pixel was masked as cloud, shadow or no-data."
 

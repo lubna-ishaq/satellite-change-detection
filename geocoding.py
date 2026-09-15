@@ -1,8 +1,8 @@
-"""Place-name search, so a user does not have to type four coordinates.
+"""Search for a place by name instead of typing coordinates.
 
-Uses the OpenStreetMap Nominatim service. Nominatim's usage policy requires
-an identifying User-Agent and at most one request per second, and forbids
-bulk or automated harvesting — this module is for interactive lookups only.
+Uses the OpenStreetMap Nominatim API. Their usage policy asks for a
+User-Agent that identifies the project and at most one request per second,
+so this is only meant for single searches from the app, not bulk requests.
 """
 
 from __future__ import annotations
@@ -16,24 +16,23 @@ LOGGER = logging.getLogger(__name__)
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 
-#: Nominatim asks every client to identify itself with a contact or project URL.
+# Nominatim wants every client to send a name and a project URL.
 USER_AGENT = (
     "satellite-change-detection/1.0 "
     "(+https://github.com/lubna-ishaq/satellite-change-detection)"
 )
 
-#: Smallest analysis window in degrees. A village returns a bounding box a few
-#: hundred metres across, which is too small to see change in; widen it so the
-#: result is always a usable scene footprint.
+# Minimum box size in degrees. A small village gives a box of a few hundred
+# metres, which is too small to see anything, so it gets enlarged.
 MIN_SPAN_DEG = 0.05
 
-#: Largest span accepted. A country-sized box would blow the pixel budget and
-#: take many minutes to download.
+# Maximum box size in degrees. Anything bigger (e.g. a whole country) would
+# be too many pixels and take forever to download.
 MAX_SPAN_DEG = 1.5
 
 
 class GeocodingError(RuntimeError):
-    """The geocoding service could not be reached or returned nothing usable."""
+    """Raised when the search service is not reachable or returns bad data."""
 
 
 @dataclass(frozen=True)
@@ -50,7 +49,7 @@ class Place:
 def _clamp_bbox(
     west: float, south: float, east: float, north: float
 ) -> tuple[float, float, float, float]:
-    """Grow a too-small box and shrink a too-large one, keeping its centre."""
+    """Make a box bigger or smaller if needed, keeping the same centre."""
     centre_lon = (west + east) / 2.0
     centre_lat = (south + north) / 2.0
 
@@ -66,10 +65,10 @@ def _clamp_bbox(
 
 
 def search_place(query: str, limit: int = 5, timeout: float = 10.0) -> list[Place]:
-    """Look up ``query`` and return candidate places with usable bounding boxes.
+    """Search for a place and return matches with a usable bounding box.
 
-    Raises :class:`GeocodingError` if the service is unreachable; returns an
-    empty list if it simply found nothing.
+    Raises GeocodingError if the service can't be reached.
+    Returns an empty list if nothing was found.
     """
     query = query.strip()
     if not query:
@@ -95,7 +94,7 @@ def search_place(query: str, limit: int = 5, timeout: float = 10.0) -> list[Plac
         if not raw or len(raw) != 4:
             continue
         try:
-            # Nominatim order is [south, north, west, east], all as strings.
+            # Nominatim returns [south, north, west, east] as strings
             south, north, west, east = (float(v) for v in raw)
         except (TypeError, ValueError):
             continue

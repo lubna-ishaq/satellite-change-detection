@@ -1,4 +1,4 @@
-"""GeoTIFF export: the georeferencing has to survive the round trip."""
+"""Tests for the GeoTIFF export (CRS and transform must be kept)."""
 
 import numpy as np
 import pytest
@@ -40,12 +40,12 @@ def test_values_survive_the_round_trip(tmp_path, geobox, delta):
     with rasterio.open(path) as src:
         read_back = src.read(1)
 
-    # float32 storage, so compare at float32 precision.
+    # stored as float32, so compare with float32 precision
     np.testing.assert_allclose(read_back, delta, atol=1e-6, equal_nan=True)
 
 
 def test_masked_pixels_stay_nodata_not_zero(tmp_path, geobox, delta):
-    """0 is a real index value; a cloud gap must not become one."""
+    """Cloud gaps must stay NaN and not turn into 0."""
     path = tmp_path / "delta.tif"
     write_geotiff(path, delta, geobox)
 
@@ -91,11 +91,11 @@ def test_in_memory_export_refuses_a_mismatched_array(geobox):
         geotiff_bytes(np.zeros((2, 2)), geobox)
 
 
-# --- Multi-band export ---------------------------------------------------
+# Multi-band export
 
 
 def test_delta_and_observations_travel_together(tmp_path, geobox, delta):
-    """A QGIS reader must be able to tell a thin pixel from a solid one."""
+    """The observation count is written as band 2."""
     observations = np.full_like(delta, 4.0)
     observations[:10, :] = 1.0
     path = tmp_path / "delta.tif"

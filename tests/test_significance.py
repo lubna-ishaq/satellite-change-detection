@@ -1,4 +1,4 @@
-"""Per-pixel observation counts, noise estimates and adaptive thresholds."""
+"""Tests for observation counts, noise and the adaptive threshold."""
 
 import numpy as np
 import pytest
@@ -18,7 +18,7 @@ def _stack(*scenes):
     return np.stack([np.asarray(s, dtype="float64") for s in scenes])
 
 
-# --- observation counts --------------------------------------------------
+# observation counts
 
 
 def test_counts_only_finite_observations():
@@ -37,7 +37,7 @@ def test_counts_reject_a_2d_input():
 
 
 def test_a_delta_is_only_as_observed_as_its_thinner_season():
-    """Six scenes in 2024 do not rescue one scene in 2021."""
+    """The delta uses the smaller count of the two years."""
     base = np.array([[1, 6]])
     comp = np.array([[6, 6]])
     np.testing.assert_array_equal(pairwise_observations(base, comp), np.array([[1, 6]]))
@@ -48,7 +48,7 @@ def test_pairwise_observations_rejects_mismatched_grids():
         pairwise_observations(np.zeros((2, 2)), np.zeros((3, 3)))
 
 
-# --- noise ---------------------------------------------------------------
+# noise
 
 
 def test_robust_scale_matches_the_mad_definition():
@@ -63,13 +63,13 @@ def test_a_constant_pixel_has_zero_noise():
 
 
 def test_a_single_observation_has_no_noise_estimate():
-    """One sample says nothing about spread; zero would be a lie."""
+    """With one value the noise is unknown (NaN), not 0."""
     stack = _stack([[0.5]], [[np.nan]], [[np.nan]])
     assert np.isnan(robust_scale(stack)[0, 0])
 
 
 def test_noise_resists_one_bad_scene():
-    """A missed cloud edge must not dominate the estimate."""
+    """One outlier (e.g. a cloud edge) should not change the result much."""
     clean = _stack([[0.50]], [[0.51]], [[0.49]], [[0.50]])
     with_outlier = _stack([[0.50]], [[0.51]], [[0.49]], [[0.95]])
     assert robust_scale(with_outlier)[0, 0] < 4 * robust_scale(clean)[0, 0] + 0.05
@@ -86,7 +86,7 @@ def test_combine_noise_rejects_mismatched_grids():
         combine_noise(np.zeros((2, 2)), np.zeros((3, 3)))
 
 
-# --- adaptive threshold --------------------------------------------------
+# adaptive threshold
 
 
 def test_threshold_scales_with_noise():
@@ -100,11 +100,10 @@ def test_floor_protects_an_implausibly_quiet_pixel():
 
 
 def test_unmeasured_pixels_get_the_typical_bar_not_the_easiest():
-    """Regression guard.
+    """Pixels without a noise value get the typical threshold, not the floor.
 
-    An earlier version sent pixels with no noise estimate to the floor,
-    which handed the *least* observed pixels the *easiest* threshold — the
-    opposite of the intended scepticism.
+    An earlier version used the floor, which gave the least reliable
+    pixels the easiest threshold.
     """
     noise = np.array([[0.10, 0.10, np.nan]])
     thresholds = adaptive_threshold(noise, sigma=2.0, floor=0.05)
@@ -117,7 +116,7 @@ def test_all_unmeasured_falls_back_to_the_floor():
     assert np.allclose(thresholds, 0.07)
 
 
-# --- statistics with a per-pixel threshold -------------------------------
+# statistics with a per-pixel threshold
 
 
 def test_statistics_accept_a_threshold_field():
@@ -154,17 +153,15 @@ def test_masked_pixels_are_ignored_by_a_threshold_field():
 
 
 def test_adaptive_is_stricter_where_the_ground_is_noisy():
-    """The point of the whole mechanism, in one assertion.
+    """A delta of 0.12 is change on stable forest, but not on noisy scrubland.
 
-    A 0.12 delta counts as change over a stable canopy and does not over
-    scrubland that scatters by that much on its own — a single constant
-    cannot express both.
+    One fixed threshold can't handle both cases.
     """
     delta = np.full((1, 2), 0.12)
     noise = np.array([[0.01, 0.09]])  # canopy, scrub
     limits = adaptive_threshold(noise, sigma=2.0, floor=0.05)
     stats = change_statistics(delta, threshold=limits)
     assert stats["gain_fraction"] == pytest.approx(0.5)
-    # A single constant calls both pixels changed, or neither.
+    # with one fixed threshold both pixels get the same answer
     assert change_statistics(delta, 0.10)["gain_fraction"] == pytest.approx(1.0)
     assert change_statistics(delta, 0.20)["gain_fraction"] == pytest.approx(0.0)

@@ -1,8 +1,7 @@
-"""The validation harness itself, with the imagery stubbed out.
+"""Tests for validation.py with fake data.
 
-These tests check that a case is judged correctly given a delta — not that
-the real events are detected. That is what `python validation.py` does, and
-it needs network access.
+They only check that the pass/fail logic is right. Whether the real events
+are detected is checked by running `python validation.py` (needs internet).
 """
 
 import numpy as np
@@ -13,7 +12,7 @@ from data_access import MAX_PIXELS, SeasonComposite, build_geobox
 from ndvi_core import INDICES, get_index
 from validation import CASES, CASES_BY_KEY, format_result, run_case
 
-# --- the case definitions themselves -------------------------------------
+# the case definitions themselves
 
 
 def test_cases_are_well_formed():
@@ -35,7 +34,7 @@ def test_case_keys_are_unique():
 
 
 def test_cases_start_no_earlier_than_the_sentinel2_archive():
-    """Sentinel-2 L2A on the Planetary Computer does not reach before 2015."""
+    """There is no Sentinel-2 L2A data before 2015."""
     for case in CASES:
         assert case.baseline_year >= 2016, case.key
 
@@ -47,12 +46,12 @@ def test_every_case_fits_the_pixel_budget():
 
 
 def test_there_is_a_negative_control():
-    """Without one, a systematic bias would pass every other case."""
+    """There has to be a control case, otherwise a bias would go unnoticed."""
     controls = [c for c in CASES if c.expect == "stable"]
     assert controls, "the suite needs at least one no-change control"
 
 
-# --- judging -------------------------------------------------------------
+# judging
 
 
 def _stub_composites(monkeypatch, baseline_arr, comparison_arr):
@@ -116,9 +115,9 @@ def test_a_quiet_control_passes(monkeypatch, control_case):
 
 
 def test_a_biased_control_fails(monkeypatch, control_case):
-    """A residual calibration offset must be caught here."""
+    """A shift of the whole image must fail the control."""
     baseline = np.full((20, 20), 0.05)
-    comparison = baseline + 0.3  # whole-scene bias, exactly the old bug
+    comparison = baseline + 0.3  # the whole image is shifted
     _stub_composites(monkeypatch, baseline, comparison)
 
     result = run_case(control_case, catalog=object())
@@ -176,12 +175,10 @@ def test_list_mode_needs_no_network(capsys):
 
 
 def test_scatter_without_drift_passes_the_control(monkeypatch, control_case):
-    """Some scatter is tolerated; a shifted mean is not.
+    """A little noise is okay, a shifted mean is not.
 
-    The tolerance is small on purpose. An earlier version of this test
-    injected enough noise to produce several percent of crossings, because
-    the control then stood on irrigated farmland and several percent looked
-    normal. On real dune field the measured figure is 0.0%.
+    The allowed noise is small on purpose: on the real dune field the
+    measured share of changed pixels is 0.0%.
     """
     rng = np.random.default_rng(1)
     baseline = np.full((200, 200), 0.04)
@@ -197,11 +194,7 @@ def test_scatter_without_drift_passes_the_control(monkeypatch, control_case):
 
 
 def test_farmland_level_scatter_now_fails_the_control(monkeypatch, control_case):
-    """Regression guard for the mis-sited control.
-
-    Cropping change of the magnitude seen at the old East Uweinat location
-    must fail rather than be waved through as desert noise.
-    """
+    """Crop changes like at the old East Uweinat location must fail."""
     rng = np.random.default_rng(2)
     baseline = np.full((200, 200), 0.04)
     comparison = baseline + rng.normal(0, 0.06, size=baseline.shape)
@@ -213,7 +206,7 @@ def test_farmland_level_scatter_now_fails_the_control(monkeypatch, control_case)
 
 
 def test_a_small_systematic_drift_still_fails_the_control(monkeypatch, control_case):
-    """A bias far below the per-pixel threshold must still be caught."""
+    """A small bias under the 0.1 threshold must still fail."""
     baseline = np.full((100, 100), 0.04)
     comparison = baseline + 0.05  # well under the 0.1 change threshold
     _stub_composites(monkeypatch, baseline, comparison)
@@ -223,7 +216,7 @@ def test_a_small_systematic_drift_still_fails_the_control(monkeypatch, control_c
     assert result.stats["loss_fraction"] + result.stats["gain_fraction"] == 0.0
 
 
-# --- Region-restricted scoring ------------------------------------------
+# Region-restricted scoring
 
 
 @pytest.fixture
@@ -238,14 +231,10 @@ def test_water_cases_are_scored_over_baseline_water_only(water_case):
 
 
 def test_padding_the_box_no_longer_changes_the_score(monkeypatch, water_case):
-    """The same event in a box with twice the farmland must score the same.
-
-    This is the property the whole-raster metric lacked: it rewarded tight
-    boxes and punished generous ones for identical physics.
-    """
+    """A bigger box with more farmland must give the same score."""
 
     def scenario(land_columns):
-        # 100 columns of water that fully dries out, plus unchanged land.
+        # 100 columns of water that dry out, the rest is land
         width = 100 + land_columns
         baseline = np.full((50, width), -0.4)  # land: not water
         comparison = baseline.copy()
@@ -267,7 +256,7 @@ def test_unchanged_water_fails_the_water_case(monkeypatch, water_case):
 
 
 def test_a_box_containing_no_water_is_reported_not_scored(monkeypatch, water_case):
-    """A misplaced bbox must say so, not quietly report 0% change."""
+    """If the box has no water, report that instead of 0% change."""
     dry = np.full((50, 100), -0.4)
     _stub_composites(monkeypatch, dry, dry.copy())
 
@@ -287,7 +276,7 @@ def test_detail_names_the_scoring_region(monkeypatch, water_case):
 
 
 def test_coverage_is_still_judged_on_the_whole_raster(monkeypatch, water_case):
-    """Restricting the score must not hide missing imagery."""
+    """Missing data must still be reported for water cases."""
     baseline = np.full((50, 100), 0.5)
     comparison = np.full((50, 100), -0.3)
     baseline[:, 20:] = np.nan  # 80% of the box has no data at all
@@ -298,17 +287,17 @@ def test_coverage_is_still_judged_on_the_whole_raster(monkeypatch, water_case):
     assert "survived masking" in result.detail
 
 
-# --- Both directions of change ------------------------------------------
+# Both directions of change
 
 
 def test_the_suite_tests_increase_as_well_as_decrease():
-    """Without an increase case the suite only ever proved one direction."""
+    """There has to be at least one case where the index goes up."""
     directions = {c.expect for c in CASES}
     assert {"decrease", "increase", "stable"} <= directions
 
 
 def test_the_increase_case_reuses_a_proven_box():
-    """Same ground, opposite direction: a sign error cannot pass both."""
+    """The regrowth case uses the same box as the fire case."""
     burn = CASES_BY_KEY["camp-fire"]
     regrowth = CASES_BY_KEY["camp-fire-regrowth"]
     assert regrowth.bbox == burn.bbox
@@ -329,7 +318,7 @@ def test_a_real_increase_passes_the_increase_case(monkeypatch):
 
 
 def test_a_decrease_fails_the_increase_case(monkeypatch):
-    """The guard against a swapped baseline or a sign error."""
+    """A decrease must fail the increase case."""
     case = CASES_BY_KEY["camp-fire-regrowth"]
     baseline = np.full((10, 10), 0.6)
     comparison = np.full((10, 10), 0.1)
@@ -342,3 +331,23 @@ def test_results_report_the_seasonal_offset(monkeypatch, decrease_case):
     baseline = np.full((10, 10), 0.6)
     _stub_composites(monkeypatch, baseline, np.full((10, 10), 0.1))
     assert "season offset" in run_case(decrease_case, catalog=object()).detail
+
+
+def test_report_is_a_markdown_table(monkeypatch, decrease_case):
+    baseline = np.full((10, 10), 0.6)
+    _stub_composites(monkeypatch, baseline, np.full((10, 10), 0.1))
+    report = validation.format_report([run_case(decrease_case, catalog=object())])
+    assert report.startswith("# Validation results")
+    assert "| Case | Index | Period | Status | Result |" in report
+    assert f"| {decrease_case.name} | NBR | 2018 → 2019 | PASS |" in report
+    assert "1/1 cases passed." in report
+
+
+def test_report_flag_writes_the_file(monkeypatch, tmp_path, decrease_case):
+    baseline = np.full((10, 10), 0.6)
+    _stub_composites(monkeypatch, baseline, np.full((10, 10), 0.1))
+    monkeypatch.setattr(validation, "open_catalog", lambda: object())
+    out = tmp_path / "report.md"
+    code = validation.main(["--case", "camp-fire", "--report", str(out)])
+    assert code == 0
+    assert "PASS" in out.read_text(encoding="utf-8")

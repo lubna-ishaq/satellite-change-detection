@@ -1,11 +1,10 @@
-"""STAC access layer: scene discovery, grid-aligned loading, compositing.
+"""Loading Sentinel-2 data: scene search, loading onto one grid, compositing.
 
-Everything that touches the network lives here. The key invariant is that
-both seasons are read onto **one shared GeoBox**, so the delta in
-``ndvi_core.calculate_index_delta`` compares identical ground locations
-pixel for pixel. Loading each scene on its own native grid (the obvious but
-wrong approach) yields rasters of different shapes and origins that either
-crash on subtraction or, worse, broadcast into a meaningless result.
+All network access happens in this file. The most important point: both
+years are loaded onto the same grid (GeoBox), so pixel (i, j) is the same
+place on the ground in both years. If every scene is loaded on its own
+grid, the arrays have different shapes and the subtraction either fails
+or compares the wrong pixels.
 """
 
 from __future__ import annotations
@@ -39,16 +38,24 @@ LOGGER = logging.getLogger(__name__)
 STAC_ENDPOINT = "https://planetarycomputer.microsoft.com/api/stac/v1"
 COLLECTION = "sentinel-2-l2a"
 
-#: Peak vegetation window in the northern hemisphere, used for both seasons.
-#: Override it for southern-hemisphere or dry-season analysis.
+# Summer in the northern hemisphere, used for both years.
+# Change it for the southern hemisphere or dry-season analysis.
 DEFAULT_SEASON = ("06-01", "08-31")
 
-#: Guard against an area of interest that would exhaust memory. A 40 MP
-#: raster at float64 is ~320 MB per band-year, and hosted Streamlit
-#: instances typically cap out around 1 GB.
+# Maximum grid size in pixels. Note: this limits the raster size, not the
+# total memory. All scenes of a composite are in memory at the same time,
+# so memory also grows with the number of scenes (see estimate_peak_memory).
 MAX_PIXELS = 40_000_000
 
-#: A few ready-made areas of interest (west, south, east, north in EPSG:4326).
+# Rough memory use per pixel per scene while building a composite:
+# 2 bands as uint16 + SCL as uint8, the float64 index stack, and the
+# temporary copies from nanmedian and the MAD.
+BYTES_PER_PIXEL_SCENE = 37
+
+# About the memory of a free Streamlit Community Cloud app
+HOSTED_MEMORY_BYTES = 1_000_000_000
+
+# Some example areas (west, south, east, north in EPSG:4326)
 AOI_PRESETS: dict[str, tuple[float, float, float, float]] = {
     "Graz, Austria": (15.35, 47.01, 15.50, 47.12),
     "Neusiedler See, Austria": (16.62, 47.70, 16.85, 47.90),
@@ -58,15 +65,14 @@ AOI_PRESETS: dict[str, tuple[float, float, float, float]] = {
 
 
 class AreaTooLargeError(ValueError):
-    """The requested bounding box and resolution exceed the pixel budget."""
+    """The area is too big for the chosen resolution."""
 
 
 def utm_epsg_for_bbox(bbox: tuple[float, float, float, float]) -> str:
-    """Pick the UTM zone containing the centre of ``bbox``.
+    """Return the UTM zone (EPSG code) for the centre of the bbox.
 
-    Working in metres matters: a metric resolution applied in EPSG:3857 is
-    stretched by 1/cos(latitude), which at 47 degrees north means a nominal
-    "20 m" pixel actually covers about 13.6 m on the ground.
+    I use UTM because it's in metres. In Web Mercator (EPSG:3857) a "20 m"
+    pixel is only about 13.6 m on the ground at 47 degrees north.
     """
     west, south, east, north = bbox
     lon = (west + east) / 2.0
@@ -76,7 +82,7 @@ def utm_epsg_for_bbox(bbox: tuple[float, float, float, float]) -> str:
 
 
 def validate_bbox(bbox: tuple[float, float, float, float]) -> None:
-    """Reject a malformed bounding box before any network call."""
+    """Check the bbox before doing any network requests."""
     west, south, east, north = bbox
     if not (-180 <= west <= 180 and -180 <= east <= 180):
         raise ValueError(f"Longitude out of range in {bbox}")
@@ -93,7 +99,7 @@ def build_geobox(
     resolution: float = 20.0,
     max_pixels: int = MAX_PIXELS,
 ) -> GeoBox:
-    """One deterministic analysis grid, reused by every scene and season."""
+    """Create the grid that all scenes of both years are loaded onto."""
     validate_bbox(bbox)
     crs = utm_epsg_for_bbox(bbox)
     projected = BoundingBox(*bbox, crs="EPSG:4326").to_crs(crs)
@@ -108,9 +114,15 @@ def build_geobox(
     return geobox
 
 
+def estimate_peak_memory(geobox: GeoBox, scenes: int) -> int:
+    """Rough estimate of the peak memory (bytes) for one year's composite."""
+    pixels = geobox.shape.x * geobox.shape.y
+    return pixels * max(scenes, 1) * BYTES_PER_PIXEL_SCENE
+
+
 @dataclass
 class SeasonComposite:
-    """A cloud-masked, grid-aligned index composite for a single season."""
+    """Result for one year: the index composite plus some extra info."""
 
     year: int
     index: SpectralIndex
@@ -119,18 +131,17 @@ class SeasonComposite:
     dates: list[str] = field(default_factory=list)
     scene_count: int = 0
     cloud_cover: list[float] = field(default_factory=list)
-    #: Per-pixel number of scenes that contributed to the composite.
+    # number of valid scenes per pixel
     observations: np.ndarray | None = None
-    #: Per-pixel scatter across those scenes, in index units.
+    # noise (scaled MAD) per pixel
     noise: np.ndarray | None = None
 
     @property
     def mean_doy(self) -> float | None:
-        """Mean day of year of the contributing acquisitions.
+        """Average day of the year of the scenes.
 
-        Comparing a mid-June composite against a late-August one measures
-        the growing season as much as it measures change, so the pipeline
-        reports this and lets the reader judge.
+        If one year is mostly June and the other mostly August, part of the
+        difference is just plant growth. This value is used for a warning.
         """
         if not self.dates:
             return None
@@ -143,15 +154,15 @@ class SeasonComposite:
             return "n/a"
         if len(self.dates) == 1:
             return self.dates[0]
-        return f"{self.dates[0]} … {self.dates[-1]} ({self.scene_count} scenes)"
+        return f"{self.dates[0]} … {self.dates[-1]}, {self.scene_count} scenes"
 
     @property
     def ndvi(self) -> np.ndarray:
-        """Backwards-compatible alias from the NDVI-only version."""
+        """Old name from the NDVI-only version."""
         return self.values
 
 
-#: Old name, kept so existing imports keep working.
+# old name, still used in some places
 YearComposite = SeasonComposite
 
 
@@ -160,11 +171,11 @@ def open_catalog(endpoint: str = STAC_ENDPOINT) -> Client:
 
 
 def scene_tile(item) -> str:
-    """The MGRS tile a STAC item belongs to.
+    """Return the Sentinel-2 tile ID (MGRS) of a scene.
 
-    Providers spell this differently, so try the known keys in turn and fall
-    back to a per-item key, which degrades to the old one-group behaviour
-    rather than mis-grouping scenes that cover different ground.
+    Different STAC catalogs use different field names, so I try all of
+    them. If none is there, the scene gets its own unique key, so it never
+    gets grouped with scenes from other places by mistake.
     """
     props = getattr(item, "properties", {}) or {}
     for key in ("s2:mgrs_tile", "grid:code", "sentinel:grid_square"):
@@ -172,6 +183,26 @@ def scene_tile(item) -> str:
         if value:
             return str(value)
     return f"unknown:{getattr(item, 'id', id(item))}"
+
+
+def scene_day(item) -> str:
+    """Return the acquisition date (UTC) of a scene as "YYYY-MM-DD".
+
+    Scenes without a date get a unique key, so they are never counted as
+    the same day.
+    """
+    stamp = getattr(item, "datetime", None)
+    if stamp is not None:
+        return stamp.date().isoformat()
+    props = getattr(item, "properties", {}) or {}
+    raw = props.get("datetime")
+    if raw:
+        return str(raw)[:10]
+    return f"undated:{getattr(item, 'id', id(item))}"
+
+
+def _cloud(item) -> float:
+    return item.properties.get("eo:cloud_cover", 100.0)
 
 
 def search_scenes(
@@ -182,19 +213,23 @@ def search_scenes(
     season: tuple[str, str] = DEFAULT_SEASON,
     max_scenes: int = 6,
 ) -> list:
-    """Return the least-cloudy scenes for ``year``, grouped so that every
-    Sentinel-2 tile touching the area is represented.
+    """Choose which scenes to use for one year.
 
-    ``max_scenes`` is a budget **per MGRS tile**, not per request. That
-    distinction matters: an area of interest wider than ~110 km spans several
-    tiles, and a single global sort by ``eo:cloud_cover`` can return N scenes
-    that all belong to the same tile. The rest of the area then has no
-    observations at all and is silently masked away as no-data — which shows
-    up as a low valid-pixel fraction and, where two tiles do meet, as a
-    straight-edged seam in the delta.
+    I select whole days instead of single scenes. If the area covers more
+    than one tile, all tiles need the same dates. In an older version each
+    tile picked its own least cloudy scenes, and the delta image had
+    rectangular blocks at the tile borders (easy to see over the lake).
 
-    Within each tile the scenes are still ordered cloudiest last, so a
-    single-tile area behaves exactly as before.
+    How it works:
+    1. Find days where every tile has a scene. Take the least cloudy ones,
+       up to max_scenes. If there is at least one such day, only these days
+       are used, even if that's fewer than max_scenes.
+    2. If there is no such day at all (e.g. the area is between two
+       orbits), each tile gets up to max_scenes days of its own. Then the
+       whole area is covered, but there can be visible borders.
+
+    For an area with only one tile, this simply returns the max_scenes
+    least cloudy scenes.
     """
     start, end = season
     search = catalog.search(
@@ -204,21 +239,50 @@ def search_scenes(
         query={"eo:cloud_cover": {"lt": max_cloud}},
     )
     items = list(search.items())
-    items.sort(key=lambda it: it.properties.get("eo:cloud_cover", 100.0))
 
-    per_tile: dict[str, list] = {}
+    per_day: dict[str, list] = {}
     for item in items:
-        per_tile.setdefault(scene_tile(item), []).append(item)
+        per_day.setdefault(scene_day(item), []).append(item)
+    tiles = {scene_tile(item) for item in items}
 
-    selected = [it for group in per_tile.values() for it in group[:max_scenes]]
-    selected.sort(key=lambda it: it.properties.get("eo:cloud_cover", 100.0))
+    def day_tiles(day: str) -> set[str]:
+        return {scene_tile(it) for it in per_day[day]}
+
+    def mean_cloud(day: str) -> float:
+        group = per_day[day]
+        return sum(_cloud(it) for it in group) / len(group)
+
+    full_days = sorted((d for d in per_day if day_tiles(d) == tiles), key=mean_cloud)
+    if full_days:
+        chosen = full_days[:max_scenes]
+        if len(chosen) < max_scenes:
+            LOGGER.info(
+                "Only %d day(s) in %d cover all %d tiles; using just those",
+                len(chosen),
+                year,
+                len(tiles),
+            )
+    else:
+        # no day covers all tiles, so pick days per tile instead
+        used = dict.fromkeys(tiles, 0)
+        chosen = []
+        ranked = sorted(per_day, key=lambda d: (-len(day_tiles(d)), mean_cloud(d)))
+        for day in ranked:
+            if any(used[t] < max_scenes for t in day_tiles(day)):
+                chosen.append(day)
+                for tile in day_tiles(day):
+                    used[tile] += 1
+
+    selected = [it for day in chosen for it in per_day[day]]
+    selected.sort(key=_cloud)
 
     LOGGER.info(
-        "Found %d candidate scenes for %d across %d tile(s); kept %d",
+        "Found %d candidate scenes for %d across %d tile(s); kept %d from %d day(s)",
         len(items),
         year,
-        len(per_tile),
+        len(tiles),
         len(selected),
+        len({scene_day(it) for it in selected}),
     )
     return selected
 
@@ -233,7 +297,7 @@ def load_season_composite(
     max_scenes: int = 6,
     index: str | SpectralIndex = DEFAULT_INDEX,
 ) -> SeasonComposite:
-    """Search, load, harmonise, cloud-mask and composite one season."""
+    """Build the composite for one year: search, load, correct, mask, median."""
     spec = index if isinstance(index, SpectralIndex) else get_index(index)
 
     items = search_scenes(
@@ -245,6 +309,14 @@ def load_season_composite(
             f"below {max_cloud}% cloud cover. Try raising the cloud threshold "
             f"or widening the season."
         )
+
+    # Processing baseline per day. Needed for the offset check, because some
+    # older scenes were reprocessed by ESA and have the offset too.
+    baselines: dict[str, str] = {}
+    for item in items:
+        value = item.properties.get("s2:processing_baseline")
+        if value is not None:
+            baselines.setdefault(scene_day(item), str(value))
 
     bands = [spec.band_a, spec.band_b, "SCL"]
     dataset = odc.stac.load(
@@ -262,7 +334,7 @@ def load_season_composite(
     for step in range(dataset.sizes["time"]):
         scene = dataset.isel(time=step)
         acquired = str(np.datetime_as_string(scene["time"].values, unit="D"))
-        offset = needs_boa_offset(acquired)
+        offset = needs_boa_offset(acquired, baselines.get(acquired))
 
         a = to_reflectance(scene[spec.band_a].values, apply_offset=offset)
         b = to_reflectance(scene[spec.band_b].values, apply_offset=offset)
@@ -272,7 +344,8 @@ def load_season_composite(
         dates.append(acquired)
 
     cube = np.stack(stack)
-    composite = stack[0] if len(stack) == 1 else median_composite(cube)
+    del stack  # free memory, cube already has a copy
+    composite = cube[0] if len(cube) == 1 else median_composite(cube)
 
     return SeasonComposite(
         year=year,
@@ -280,7 +353,7 @@ def load_season_composite(
         values=composite,
         geobox=geobox,
         dates=sorted(dates),
-        scene_count=len(stack),
+        scene_count=len(cube),
         observations=observation_count(cube),
         noise=robust_scale(cube),
         cloud_cover=[
@@ -289,5 +362,5 @@ def load_season_composite(
     )
 
 
-#: Old name, kept so existing imports keep working.
+# old name, still used in some places
 load_year_composite = load_season_composite

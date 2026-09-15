@@ -1,9 +1,10 @@
-"""Command line entry point for the Sentinel-2 change detection pipeline.
+"""Command line tool for the Sentinel-2 change detection.
 
-Every figure in the README is reproducible from this script, for example:
+The example image in the README was made with:
 
     python main.py --baseline-year 2021 --comparison-year 2024 \
-        --aoi "Neusiedler See, Austria" --out change_detection_vergleich.png
+        --aoi "Neusiedler See, Austria" --max-scenes 4 --max-cloud 20 \
+        --season 07-01:08-31
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from data_access import (
     DEFAULT_SEASON,
     AreaTooLargeError,
     build_geobox,
+    estimate_peak_memory,
     load_season_composite,
     open_catalog,
 )
@@ -34,13 +36,13 @@ from plotting import build_comparison_figure, format_statistics
 
 LOGGER = logging.getLogger("change_detection")
 
-#: Beyond this many days between the two composites, seasonal difference
-#: starts to dominate whatever real change is present.
+# If the two composites are more than this many days apart, a big part of
+# the difference is just seasonal plant growth.
 MAX_DOY_OFFSET = 21
 
 
 def _season(value: str) -> tuple[str, str]:
-    """Parse ``MM-DD:MM-DD`` into a season window."""
+    """Parse "MM-DD:MM-DD" into a (start, end) tuple."""
     try:
         start, end = value.split(":")
     except ValueError:
@@ -155,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     bbox = tuple(args.bbox) if args.bbox else AOI_PRESETS[args.aoi]
     area_label = "custom bbox" if args.bbox else args.aoi
 
-    # One grid, both seasons. This is what makes the subtraction meaningful.
+    # same grid for both years, otherwise the subtraction makes no sense
     try:
         geobox = build_geobox(bbox, resolution=args.resolution)
     except AreaTooLargeError as exc:
@@ -172,7 +174,9 @@ def main(argv: list[str] | None = None) -> int:
         f"Analysis grid : {geobox.shape.x} x {geobox.shape.y} px "
         f"at {args.resolution:g} m, {geobox.crs}\n"
         f"Season        : {args.season[0]} to {args.season[1]}, "
-        f"cloud cover < {args.max_cloud:g}%"
+        f"cloud cover < {args.max_cloud:g}%\n"
+        f"Memory        : ~{estimate_peak_memory(geobox, args.max_scenes) / 1e9:.1f} GB "
+        f"peak per season with {args.max_scenes} scenes"
     )
 
     try:
@@ -223,15 +227,14 @@ def main(argv: list[str] | None = None) -> int:
 
     stats = change_statistics(delta, threshold=limit)
 
-    # A composite made from a mid-June window and one made from late August
-    # differ by growing season as much as by change.
+    # warn if the two composites are from different parts of the season
     base_doy, comp_doy = baseline.mean_doy, comparison.mean_doy
     if base_doy is not None and comp_doy is not None:
         offset = abs(comp_doy - base_doy)
         print(f"Season offset : {offset:.0f} days between the two composites")
         if offset > MAX_DOY_OFFSET:
             print(
-                f"  warning: more than {MAX_DOY_OFFSET} days apart — part of this "
+                f"  warning: more than {MAX_DOY_OFFSET} days apart, part of this "
                 "delta is phenology, not change.",
                 file=sys.stderr,
             )

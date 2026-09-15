@@ -23,7 +23,7 @@ def test_every_index_is_a_normalised_difference_of_two_distinct_bands():
     "name, band_a, band_b",
     [
         ("NDVI", "B08", "B04"),  # NIR, Red
-        ("NDWI", "B03", "B08"),  # Green, NIR — McFeeters, water positive
+        ("NDWI", "B03", "B08"),  # Green, NIR (McFeeters), water is positive
         ("NBR", "B08", "B12"),  # NIR, SWIR2
     ],
 )

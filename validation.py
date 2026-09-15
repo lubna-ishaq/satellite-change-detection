@@ -1,31 +1,30 @@
-"""Validation against documented change events.
+"""Check the pipeline against real, documented events.
 
-Unit tests prove the arithmetic is self-consistent. They cannot prove the
-pipeline detects real change on real imagery. This module closes that gap:
-each case is a place and period where something well documented happened,
-plus the direction and rough magnitude the pipeline is expected to report.
+The unit tests only check that the math is consistent. They can't show
+that the pipeline finds real changes in real satellite data. So each case
+here is a place where something known happened (a fire, a drained lake),
+together with the direction of change I expect.
 
-The suite deliberately includes a **negative control** — a hyper-arid area
-where almost nothing changes between years. A pipeline with a residual
-calibration bias will happily report "change" there, so a control that must
-come back quiet is the single most informative case in the set.
+There is also a negative control: a desert area where nothing should
+change. If the pipeline has a calibration error, it shows up there as
+fake change, which makes it the most useful case.
 
-Run it with:
+Usage:
 
     python validation.py            # all cases
     python validation.py --case camp-fire
+    python validation.py --report validation_results.md
 
-Every bounding box below has been checked on a map against what it is
-supposed to contain. That check is not optional bookkeeping: the negative
-control originally sat on a centre-pivot irrigation scheme that reads as
-empty desert on a satellite image, which would have made it useless at the
-one thing it exists for. Boxes are still approximate — chosen to contain
-the event, not to trace it — so re-check before citing any number.
+I checked every bounding box on a map. The first control area turned out
+to be an irrigation project (it looks like empty desert on the satellite
+image), which would have made it useless. The boxes are still rough, so
+check them on a map before quoting any number.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import sys
 from dataclasses import dataclass
 
@@ -36,7 +35,7 @@ from ndvi_core import calculate_index_delta, change_statistics
 
 Expectation = str  # "decrease" | "increase" | "stable"
 
-#: A restricted region smaller than this is not a measurement, it is noise.
+# If fewer pixels than this are left after filtering, the result is not meaningful
 MIN_REGION_PIXELS = 500
 
 
@@ -49,15 +48,15 @@ class ValidationCase:
     baseline_year: int
     comparison_year: int
     expect: Expectation
-    #: For "decrease"/"increase": the minimum share of valid area that must
-    #: move that way. For "stable": the maximum share allowed to move at all.
+    # "decrease"/"increase": minimum share of pixels that must change that way.
+    # "stable": maximum share of pixels that may change at all.
     fraction: float
     event: str
-    #: "stable" cases only: the largest mean delta accepted. This, not the
-    #: scattered fraction, is the real test — see the note in `run_case`.
+    # Only for "stable": maximum allowed mean delta. This is the main check
+    # for the control (see the comment in run_case).
     max_bias: float = 0.02
-    #: Restrict scoring to pixels whose BASELINE index exceeds this value.
-    #: For a water case, 0.0 selects "was water before" — see `run_case`.
+    # Only score pixels where the baseline index is above this value.
+    # For water cases 0.0 means "was water in the baseline year".
     baseline_above: float | None = None
     season: tuple[str, str] = ("06-01", "08-31")
     resolution: float = 60.0
@@ -84,10 +83,8 @@ CASES: tuple[ValidationCase, ...] = (
     ValidationCase(
         key="camp-fire-regrowth",
         name="Camp Fire regrowth, Paradise, California",
-        # Deliberately the same box as camp-fire: the strongest test of an
-        # increase is ground already proven to produce a clean decrease.
-        # The same pixels must fall 2018->2019 and recover 2019->2024, so a
-        # sign error or a swapped baseline cannot pass both.
+        # Same box as camp-fire on purpose. The same pixels have to go down
+        # 2018->2019 and back up 2019->2024, so a sign error can't pass both.
         bbox=(-121.70, 39.68, -121.50, 39.86),
         index="NBR",
         baseline_year=2019,
@@ -109,10 +106,9 @@ CASES: tuple[ValidationCase, ...] = (
         baseline_year=2022,
         comparison_year=2024,
         expect="decrease",
-        # Scored over baseline water only: at least half of what was water in
-        # 2022 must no longer be water. Over the whole box this signal was
-        # 15.5%, which says more about how much farmland the box includes
-        # than about the reservoir.
+        # Only pixels that were water in 2022 are scored: at least half of
+        # them must be gone. Over the whole box it was only 15.5%, because
+        # most of the box is farmland.
         fraction=0.50,
         baseline_above=0.0,
         event=(
@@ -142,36 +138,28 @@ CASES: tuple[ValidationCase, ...] = (
     ),
     ValidationCase(
         key="sahara-control",
-        name="NEGATIVE CONTROL — Great Sand Sea, western Egypt",
-        # Checked on a map before use. An earlier version of this control sat
-        # at 28.40-28.70E / 22.60-22.85N, which looks like empty desert on a
-        # satellite image but is the East Uweinat centre-pivot irrigation
-        # scheme, complete with an airport. A control standing on active
-        # farmland cannot distinguish pipeline bias from real cropping change,
-        # which is the one job it has. This box is open dune field: no roads,
-        # no fields, no settlements.
+        name="NEGATIVE CONTROL: Great Sand Sea, western Egypt",
+        # My first box was at 28.40-28.70E / 22.60-22.85N. It looks like
+        # desert, but it's the East Uweinat irrigation project (with an
+        # airport). On farmland you can't tell a pipeline error from real crop
+        # changes, so I moved it here: only sand dunes, no roads or fields.
         bbox=(26.10, 25.35, 26.40, 25.60),
         index="NDVI",
         baseline_year=2019,
         comparison_year=2024,
         expect="stable",
-        # Scatter bound RE-DERIVED after moving the site. At the old, wrongly
-        # chosen location 7.7% of pixels crossed +-0.1 and that was explained
-        # away as noise over bare desert; the loose 15% bound came from that
-        # reasoning. On genuine dune field the measured figure is 0.0%, so the
-        # scatter was the irrigation scheme's crops all along and the
-        # explanation was wrong. 2% keeps headroom over a measured zero
-        # without being the rubber band it was.
+        # At the old location 7.7% of pixels changed by more than 0.1. I
+        # thought that was desert noise and allowed 15%. At the new location
+        # it's 0.0%, so it was actually the crops. The limit is now 2%.
         #
-        # The bias bound stays at 0.02. It is the primary criterion and the
-        # one that must not become brittle to ordinary year-to-year variation;
-        # the measured value is 0.0065.
+        # The bias limit stays at 0.02. That's the main check and it shouldn't
+        # fail because of normal year-to-year differences. Measured: 0.0013.
         fraction=0.02,
         max_bias=0.02,
         event=(
             "Open sand desert with negligible vegetation and almost no cloud. "
             "Nothing here should change between years. If the MEAN delta "
-            "drifts from zero, the pipeline has a residual bias — most likely "
+            "drifts from zero, the pipeline has a remaining bias, most likely "
             "an incomplete radiometric harmonisation."
         ),
     ),
@@ -193,7 +181,7 @@ class CaseResult:
 
 
 def run_case(case: ValidationCase, catalog=None) -> CaseResult:
-    """Execute one case end to end and judge it against its expectation."""
+    """Run one case with real data and check if the result is as expected."""
     catalog = catalog or open_catalog()
     geobox = build_geobox(case.bbox, resolution=case.resolution)
 
@@ -218,8 +206,7 @@ def run_case(case: ValidationCase, catalog=None) -> CaseResult:
     delta = calculate_index_delta(baseline.values, comparison.values)
     coverage = change_statistics(delta, threshold=case.threshold)
 
-    # Coverage is judged on the whole raster: it answers "did we get imagery?",
-    # which is a different question from "did the event show up?".
+    # First check if we got enough usable pixels at all (whole image).
     if coverage["valid_pixels"] == 0:
         return CaseResult(case, False, "every pixel was masked as cloud", coverage)
 
@@ -232,13 +219,10 @@ def run_case(case: ValidationCase, catalog=None) -> CaseResult:
             coverage,
         )
 
-    # Some events only make sense measured over the ground they affect. A
-    # reservoir that drains changes the water, not the surrounding farmland,
-    # so scoring "share of the whole box that lost water" mostly measures how
-    # much padding the box has — pad it more and the same real event scores
-    # lower. Restricting to pixels that were water in the baseline asks the
-    # question that has a defensible answer: of the water that was there, how
-    # much went away?
+    # For water cases only the pixels that were water in the baseline count.
+    # Otherwise the result depends on how much farmland is in the box: a
+    # bigger box would give a lower score for the same event. The question
+    # is: of the water that was there, how much is gone?
     scope = ""
     judged = delta
     if case.baseline_above is not None:
@@ -272,16 +256,11 @@ def run_case(case: ValidationCase, catalog=None) -> CaseResult:
             f"valid coverage {coverage['valid_fraction']:.0%}"
         )
     elif case.expect == "stable":
-        # What a negative control is actually for is detecting *systematic*
-        # bias: a calibration error shifts the whole scene one way, so it
-        # shows up in the mean. Per-pixel scatter is a different thing. Over
-        # bare desert both red and NIR reflectance are small, and a ratio of
-        # two small numbers amplifies sensor noise, so a few percent of
-        # pixels crossing a ±0.1 threshold is expected physics, not a bug.
-        # Judging the control on scatter alone would fail a correct pipeline
-        # and tempt the next person to "fix" it by loosening the threshold.
-        # So: the mean is the criterion, with a generous scatter bound kept
-        # as a second guard so the case can still fail loudly.
+        # The control is mainly about systematic errors. A calibration error
+        # shifts the whole image in one direction, so it shows up in the mean.
+        # Single pixels can still be noisy over desert (red and NIR are both
+        # small there, so the ratio is noisy). That's why the mean is the main
+        # check and the share of changed pixels is only a second check.
         bias = abs(stats["mean_delta"])
         moved = down + up
         passed = bias <= case.max_bias and moved <= case.fraction
@@ -315,6 +294,27 @@ def format_result(result: CaseResult) -> str:
     return "\n".join(lines)
 
 
+def format_report(results: list[CaseResult]) -> str:
+    """Create a Markdown table of the results (saved as validation_results.md)."""
+    lines = [
+        "# Validation results",
+        "",
+        f"Generated by `python validation.py --report` on {dt.date.today():%Y-%m-%d}.",
+        "",
+        "| Case | Index | Period | Status | Result |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for r in results:
+        c = r.case
+        lines.append(
+            f"| {c.name} | {c.index} | {c.baseline_year} → {c.comparison_year} "
+            f"| {r.status} | {r.detail} |"
+        )
+    passed = sum(r.passed for r in results)
+    lines += ["", f"{passed}/{len(results)} cases passed.", ""]
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
@@ -324,6 +324,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Run only this case; repeatable. Default: all.",
     )
     parser.add_argument("--list", action="store_true", help="List cases and exit.")
+    parser.add_argument(
+        "--report", metavar="PATH", help="Also write the results as a Markdown table."
+    )
     args = parser.parse_args(argv)
 
     if args.list:
@@ -353,6 +356,10 @@ def main(argv: list[str] | None = None) -> int:
 
     passed = sum(r.passed for r in results)
     print(f"{passed}/{len(results)} cases passed")
+    if args.report:
+        with open(args.report, "w", encoding="utf-8") as fh:
+            fh.write(format_report(results))
+        print(f"Wrote {args.report}")
     return 0 if passed == len(results) else 1
 
 

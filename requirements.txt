@@ -1,11 +1,10 @@
-# Pinned to the versions this project is tested against.
+# Versions this project is tested with.
 #
-# The odc-stac floor matters: releases below 0.5 import `dask.base.quote`,
-# which dask removed in 2025. Pairing odc-stac 0.3.x with a current dask
-# fails at import time with "cannot import name 'quote' from 'dask.base'".
+# odc-stac needs to be at least 0.5: older versions import dask.base.quote,
+# which was removed from dask in 2025 ("cannot import name 'quote'").
 #
-# This file is also the Streamlit Community Cloud manifest, so it must stay
-# limited to what the hosted app actually needs.
+# Streamlit Community Cloud also installs from this file, so only put
+# packages here that the app needs.
 numpy>=1.26,<3
 matplotlib>=3.8,<4
 streamlit>=1.36,<2

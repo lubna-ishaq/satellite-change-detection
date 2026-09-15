@@ -1,26 +1,19 @@
-"""Core spectral-index mathematics for Sentinel-2 L2A change detection.
+"""Calculations for the change detection (indices, compositing, statistics).
 
-This module is deliberately free of I/O and network calls so that every
-numerical decision can be unit tested. See ``data_access.py`` for the STAC
-layer and ``main.py`` / ``app.py`` for the two front ends.
+No network access in this file, so everything here can be unit tested.
+Data loading is in data_access.py, the CLI is main.py and the app is app.py.
 
-Two corrections implemented here are what separate a plausible-looking
-index delta from a defensible one:
+Two things here matter a lot for correct results:
 
-1. **Radiometric harmonisation.** From ESA Processing Baseline 04.00
-   (products acquired on or after 2022-01-25) Sentinel-2 L2A surface
-   reflectance is stored with an additive offset of -1000 DN. Comparing a
-   2021 scene against a 2024 scene without applying it produces a large,
-   spatially coherent bias across the whole image that is easily mistaken
-   for real land cover change.
-2. **Per-pixel cloud masking.** A scene-level ``eo:cloud_cover`` filter says
-   nothing about the individual pixel. Clouds, cirrus, shadow and snow are
-   removed via the Scene Classification Layer (SCL) before any statistics
-   are computed.
+1. Reflectance offset: since ESA processing baseline 04.00 (data from
+   2022-01-25 on) the L2A values have an offset of -1000. If you don't
+   correct it, comparing 2021 with 2024 shows a fake change over the whole
+   image.
+2. Cloud masking per pixel: the scene cloud cover says nothing about a
+   single pixel, so clouds, shadows, snow etc. are removed with the SCL band.
 
-Invalid pixels are represented as ``NaN``, never as ``0``: zero is a
-legitimate index value (bare soil, rock, concrete), so using it as a
-no-data flag silently contaminates every mean, histogram and change count.
+Missing values are always NaN and never 0, because 0 is a real index value
+(bare soil, rock) and would mess up means and counts.
 """
 
 from __future__ import annotations
@@ -34,17 +27,17 @@ import numpy as np
 
 # --- Sentinel-2 L2A radiometry -------------------------------------------
 
-#: First acquisition date processed with Baseline 04.00.
+# First acquisition date with processing baseline 04.00
 BASELINE_04_00_CUTOFF = _dt.date(2022, 1, 25)
 
-#: Additive offset (in DN) applied to L2A BOA reflectance from Baseline 04.00.
+# Offset that ESA adds to the reflectance values since baseline 04.00
 BOA_ADD_OFFSET = -1000.0
 
-#: DN-to-reflectance scale factor.
+# Divide the raw values by this to get reflectance (0-1)
 BOA_QUANTIFICATION_VALUE = 10000.0
 
-#: Scales a median absolute deviation to a standard deviation for normal
-#: data, so a noise field reads in the same units as the index itself.
+# Converts the median absolute deviation (MAD) to the same scale as a
+# standard deviation (for normally distributed data).
 MAD_TO_SIGMA = 1.4826
 
 # --- Scene Classification Layer (SCL) ------------------------------------
@@ -62,8 +55,8 @@ SCL_CLOUD_HIGH_PROB = 9
 SCL_THIN_CIRRUS = 10
 SCL_SNOW = 11
 
-#: Classes kept for analysis. Water is retained on purpose: shrinking lakes
-#: and reservoirs are one of the changes this pipeline is meant to surface.
+# SCL classes that are kept. Water is kept on purpose, otherwise shrinking
+# lakes and reservoirs could not be detected.
 DEFAULT_VALID_SCL_CLASSES: tuple[int, ...] = (
     SCL_VEGETATION,
     SCL_NOT_VEGETATED,
@@ -77,11 +70,11 @@ DEFAULT_VALID_SCL_CLASSES: tuple[int, ...] = (
 
 @dataclass(frozen=True)
 class SpectralIndex:
-    """A normalised difference index ``(a - b) / (a + b)``.
+    """A normalised difference index: (a - b) / (a + b).
 
-    ``increase_label`` / ``decrease_label`` name what a positive or negative
-    delta physically means, so the UI never has to hard-code "vegetation"
-    for an index that measures water.
+    increase_label and decrease_label say what a positive or negative delta
+    means for this index (e.g. "Water gain" for NDWI), so the plots and the
+    app can show the right text.
     """
 
     name: str
@@ -103,7 +96,7 @@ INDICES: dict[str, SpectralIndex] = {
         name="NDVI",
         band_a="B08",  # NIR, reflected by leaf mesophyll
         band_b="B04",  # Red, absorbed by chlorophyll
-        description="Normalised Difference Vegetation Index — vegetation vigour.",
+        description="Normalised Difference Vegetation Index: vegetation health.",
         increase_label="Vegetation gain",
         decrease_label="Vegetation loss",
         display_min=-0.2,
@@ -114,7 +107,7 @@ INDICES: dict[str, SpectralIndex] = {
         band_a="B03",  # Green
         band_b="B08",  # NIR, strongly absorbed by water
         description=(
-            "Normalised Difference Water Index (McFeeters 1996) — open water "
+            "Normalised Difference Water Index (McFeeters 1996): open water "
             "extent. Positive values indicate water."
         ),
         increase_label="Water gain / flooding",
@@ -127,7 +120,7 @@ INDICES: dict[str, SpectralIndex] = {
         band_a="B08",  # NIR, drops after fire
         band_b="B12",  # SWIR 2, rises after fire
         description=(
-            "Normalised Burn Ratio — fire severity and post-fire recovery. "
+            "Normalised Burn Ratio: fire severity and post-fire recovery. "
             "Note the sign: this pipeline reports comparison minus baseline, "
             "so a burn appears as a NEGATIVE delta. The dNBR convention in "
             "the literature is the reverse (baseline minus comparison)."
@@ -143,7 +136,7 @@ DEFAULT_INDEX = "NDVI"
 
 
 def get_index(name: str) -> SpectralIndex:
-    """Look up an index by name, case-insensitively."""
+    """Get an index by name (not case sensitive)."""
     try:
         return INDICES[name.upper()]
     except KeyError:
@@ -155,13 +148,25 @@ def get_index(name: str) -> SpectralIndex:
 # --- Radiometry ----------------------------------------------------------
 
 
-def needs_boa_offset(acquired: _dt.date | _dt.datetime | str) -> bool:
-    """Return ``True`` if a scene acquired at ``acquired`` carries the
-    Baseline 04.00 reflectance offset.
+def needs_boa_offset(
+    acquired: _dt.date | _dt.datetime | str,
+    processing_baseline: str | float | None = None,
+) -> bool:
+    """Check if a scene has the -1000 reflectance offset.
 
-    ``acquired`` may be a ``date``, a ``datetime`` or an ISO 8601 string
-    (with or without a trailing ``Z``).
+    The best way to know is the processing baseline of the scene (STAC field
+    "s2:processing_baseline", e.g. "05.09"). ESA reprocessed some older
+    scenes with a newer baseline, and those have the offset too, even though
+    they are from before 2022-01-25. Only if the baseline is missing or
+    can't be read, the acquisition date is used.
+
+    acquired can be a date, a datetime or an ISO string like "2024-08-29".
     """
+    if processing_baseline is not None:
+        try:
+            return float(processing_baseline) >= 4.0
+        except (TypeError, ValueError):
+            pass  # can't read the value, use the date instead
     if isinstance(acquired, str):
         acquired = _dt.datetime.fromisoformat(acquired.replace("Z", "+00:00"))
     if isinstance(acquired, _dt.datetime):
@@ -170,11 +175,10 @@ def needs_boa_offset(acquired: _dt.date | _dt.datetime | str) -> bool:
 
 
 def to_reflectance(digital_numbers: np.ndarray, apply_offset: bool) -> np.ndarray:
-    """Convert raw L2A digital numbers to surface reflectance.
+    """Convert raw L2A values to reflectance (roughly 0 to 1).
 
-    Applies to every BOA reflectance band, not just red and NIR. Pixels
-    equal to 0 are Sentinel-2's no-data value and become ``NaN``.
-    ``apply_offset`` should come from :func:`needs_boa_offset`.
+    Raw value 0 means no data in Sentinel-2, so it becomes NaN.
+    apply_offset should be the result of needs_boa_offset().
     """
     dn = np.asarray(digital_numbers, dtype="float64")
     reflectance = np.where(dn == SCL_NO_DATA, np.nan, dn)
@@ -186,8 +190,8 @@ def to_reflectance(digital_numbers: np.ndarray, apply_offset: bool) -> np.ndarra
 def scl_valid_mask(
     scl: np.ndarray, valid_classes: Iterable[int] = DEFAULT_VALID_SCL_CLASSES
 ) -> np.ndarray:
-    """Boolean mask that is ``True`` where the SCL band marks usable land or
-    water and ``False`` over cloud, cirrus, shadow, snow and no-data."""
+    """True where the SCL says the pixel is usable (land or water),
+    False for clouds, cirrus, shadow, snow and no data."""
     return np.isin(np.asarray(scl), tuple(valid_classes))
 
 
@@ -199,15 +203,13 @@ def normalized_difference(
     band_b: np.ndarray,
     valid_mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    """``(a - b) / (a + b)`` with the no-data discipline this project needs.
+    """Calculate (a - b) / (a + b).
 
-    Both bands must already be in reflectance units (see
-    :func:`to_reflectance`); a normalised difference is a ratio, so a
-    missing offset correction does not cancel out.
+    Both bands have to be converted with to_reflectance() first. Because
+    this is a ratio, a missing offset correction does NOT cancel out.
 
-    Pixels where the denominator is zero, where either input is ``NaN``, or
-    where ``valid_mask`` is ``False`` are returned as ``NaN``. The result is
-    clipped to the physical range [-1, 1].
+    The result is NaN where a + b is 0, where an input is NaN or where
+    valid_mask is False. Values are clipped to [-1, 1].
     """
     a = np.asarray(band_a, dtype="float64")
     b = np.asarray(band_b, dtype="float64")
@@ -235,19 +237,18 @@ def calculate_ndvi(
     nir_band: np.ndarray,
     valid_mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    """NDVI, ``(NIR - Red) / (NIR + Red)``.
+    """NDVI = (NIR - Red) / (NIR + Red).
 
-    Kept as a named convenience because NDVI is the default index; it is
-    :func:`normalized_difference` with the arguments in vegetation order.
+    Just a shortcut for normalized_difference with NIR first.
     """
     return normalized_difference(nir_band, red_band, valid_mask=valid_mask)
 
 
 def calculate_index_delta(baseline: np.ndarray, comparison: np.ndarray) -> np.ndarray:
-    """Spatial delta matrix ``comparison - baseline``.
+    """Change per pixel: comparison minus baseline.
 
-    Raises rather than broadcasting when the two rasters sit on different
-    grids: a silent broadcast would compare unrelated ground locations.
+    Raises an error if the shapes don't match. Otherwise numpy might
+    broadcast the arrays and compare pixels that aren't the same place.
     """
     base = np.asarray(baseline, dtype="float64")
     comp = np.asarray(comparison, dtype="float64")
@@ -262,34 +263,31 @@ def calculate_index_delta(baseline: np.ndarray, comparison: np.ndarray) -> np.nd
     return comp - base
 
 
-#: Backwards-compatible alias from when this pipeline only handled NDVI.
+# Old name from when the project only did NDVI
 calculate_ndvi_delta = calculate_index_delta
 
 
 def median_composite(stack: np.ndarray) -> np.ndarray:
-    """NaN-aware median over the leading (time) axis of an index stack.
+    """Median over time for every pixel, ignoring NaN.
 
-    A median across every low-cloud scene in the season is far more stable
-    than a single acquisition date, which mostly measures that day's
-    weather and sun angle.
+    Input shape is (time, y, x). A median of several scenes is much more
+    stable than a single date, which mostly shows that day's conditions.
     """
     stack = np.asarray(stack, dtype="float64")
     if stack.ndim < 3:
         raise ValueError(f"Expected a (time, y, x) stack, got shape {stack.shape}")
     clean = np.where(np.isfinite(stack), stack, np.nan)
     with warnings.catch_warnings():
-        # An all-NaN column is legitimate: a pixel clouded in every scene.
+        # a pixel can be cloudy in every scene, that's fine
         warnings.filterwarnings("ignore", message="All-NaN slice encountered")
         return np.nanmedian(clean, axis=0)
 
 
 def observation_count(stack: np.ndarray) -> np.ndarray:
-    """How many scenes actually contributed to each pixel of a composite.
+    """Number of valid scenes per pixel.
 
-    A pixel built from one observation and one built from six look identical
-    in the composite but are not equally trustworthy. Carrying the count
-    lets a reader tell them apart — and makes tile seams, where coverage
-    changes abruptly, visible instead of silent.
+    In the composite you can't see if a pixel is based on 1 scene or 6,
+    but the 1-scene pixels are less reliable. This count makes it visible.
     """
     stack = np.asarray(stack, dtype="float64")
     if stack.ndim < 3:
@@ -298,14 +296,12 @@ def observation_count(stack: np.ndarray) -> np.ndarray:
 
 
 def robust_scale(stack: np.ndarray) -> np.ndarray:
-    """Per-pixel noise estimate: the median absolute deviation, scaled to
-    be comparable with a standard deviation for normal data.
+    """Noise per pixel, measured as scaled median absolute deviation (MAD).
 
-    The MAD is used rather than the standard deviation because a composite
-    of a handful of scenes is exactly where one undetected cloud edge would
-    dominate a variance. Pixels with fewer than two observations get ``NaN``:
-    a single sample says nothing about spread, and pretending it means zero
-    noise would make every such pixel look infinitely significant.
+    I use the MAD instead of the standard deviation because with only a few
+    scenes, one missed cloud edge would blow up the standard deviation.
+    Pixels with less than 2 observations get NaN, because you can't
+    measure spread from one value.
     """
     stack = np.asarray(stack, dtype="float64")
     if stack.ndim < 3:
@@ -326,10 +322,10 @@ def robust_scale(stack: np.ndarray) -> np.ndarray:
 def pairwise_observations(
     baseline_counts: np.ndarray, comparison_counts: np.ndarray
 ) -> np.ndarray:
-    """Observations behind a *difference*: the weaker of the two seasons.
+    """Observations for the delta = the smaller count of the two years.
 
-    A delta is only as well observed as its thinner side — six scenes in
-    2024 do not rescue a single scene in 2021.
+    If 2021 has 1 scene and 2024 has 6, the delta is still based on 1 scene
+    for the 2021 side.
     """
     a = np.asarray(baseline_counts)
     b = np.asarray(comparison_counts)
@@ -339,7 +335,7 @@ def pairwise_observations(
 
 
 def combine_noise(baseline_noise: np.ndarray, comparison_noise: np.ndarray):
-    """Noise of a difference of two independent estimates: added in quadrature."""
+    """Noise of the delta: sqrt(a^2 + b^2), since the two years are independent."""
     a = np.asarray(baseline_noise, dtype="float64")
     b = np.asarray(comparison_noise, dtype="float64")
     if a.shape != b.shape:
@@ -350,19 +346,16 @@ def combine_noise(baseline_noise: np.ndarray, comparison_noise: np.ndarray):
 def adaptive_threshold(
     noise: np.ndarray, sigma: float = 2.0, floor: float = 0.05
 ) -> np.ndarray:
-    """Turn a per-pixel noise field into a per-pixel change threshold.
+    """Threshold per pixel: sigma * noise, but at least floor.
 
-    A single fixed threshold is wrong in both directions at once: over noisy
-    bare ground it lets scatter through as "change", and over a stable
-    canopy it hides real change smaller than the constant. This asks the
-    same question everywhere instead — is the difference larger than this
-    pixel's own scatter? — with a floor so that an implausibly quiet pixel
-    cannot make trivial differences look significant.
+    One fixed threshold for the whole image doesn't work well: on noisy
+    bare ground it counts noise as change, and on stable forest it misses
+    small real changes. So every pixel is compared with its own noise.
+    The floor stops very quiet pixels from getting a tiny threshold.
 
-    Pixels with too few observations to estimate scatter fall back to the
-    scene's typical threshold, never to the floor. Falling back to the floor
-    would hand the *least* observed pixels the *easiest* bar to clear, which
-    is precisely backwards: those are the pixels to be most sceptical about.
+    Pixels where the noise is unknown (too few scenes) get the median
+    threshold of the image, not the floor. Otherwise the least reliable
+    pixels would get the easiest threshold.
     """
     noise = np.asarray(noise, dtype="float64")
     scaled = sigma * noise
@@ -373,18 +366,15 @@ def adaptive_threshold(
 
 
 def change_statistics(delta: np.ndarray, threshold=0.1) -> dict:
-    """Quantify an index delta matrix.
+    """Summary statistics for a delta array.
 
-    ``threshold`` is the magnitude below which a change is treated as noise.
-    0.1 is a common conservative choice for Sentinel-2 summer pairs. It may
-    also be a **per-pixel field** of the same shape as ``delta`` — see
-    :func:`adaptive_threshold` — in which case each pixel is judged against
-    its own scatter instead of one constant for the whole scene.
+    threshold: changes smaller than this count as noise (0.1 is a common
+    value for Sentinel-2). It can also be an array with one threshold per
+    pixel (see adaptive_threshold).
 
-    Returns valid-pixel counts and the share of the *valid* area (not of the
-    full raster) that decreased or increased. The ``loss_``/``gain_`` keys
-    read naturally for NDVI; for other indices use the index's
-    ``decrease_label`` / ``increase_label`` when presenting them.
+    loss_fraction and gain_fraction are shares of the valid pixels, not of
+    the whole image. The names fit NDVI; for other indices use
+    decrease_label / increase_label when showing them.
     """
     delta = np.asarray(delta, dtype="float64")
     finite = np.isfinite(delta)

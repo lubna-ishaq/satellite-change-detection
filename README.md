@@ -1,116 +1,98 @@
 # Sentinel-2 Satellite Change Detection
 
-## Example Output
+![Example output: NDVI change around Neusiedler See, 2021 vs 2024](change_detection_vergleich.png)
 
-![Satellite Change Detection Output](change_detection_vergleich.png)
+This tool compares two seasons of Sentinel-2 imagery and maps what changed:
+vegetation (NDVI), open water (NDWI) or burn scars (NBR). It runs as a
+Streamlit app or from the command line and can export the result as a GeoTIFF
+for QGIS. The imagery comes from the Microsoft Planetary Computer, which is
+free to use.
 
-Compares two seasons of Sentinel-2 imagery and shows what changed. Vegetation
-(NDVI), open water (NDWI) or burn scars (NBR). Runs as a Streamlit app or from
-the command line, and exports a GeoTIFF you can drop into QGIS.
-
-Imagery comes from the Microsoft Planetary Computer, which is free and available to the public.
-
-The project validates its results against documented wildfires, reservoir loss events and a negative-control desert region to detect calibration bias.
-
-The picture above:
+The image above was created with:
 
 ```bash
 python main.py --baseline-year 2021 --comparison-year 2024 \
-    --aoi "Neusiedler See, Austria" --max-scenes 4
+    --aoi "Neusiedler See, Austria" --max-scenes 4 --max-cloud 20 \
+    --season 07-01:08-31
 ```
-## Pipeline Overview
 
-```text
-Sentinel-2 Search
-        │
-        ▼
-Scene Selection
-        │
-        ▼
-SCL Cloud Masking
-        │
-        ▼
-Seasonal Median Composite
-        │
-        ▼
-NDVI / NDWI / NBR
-        │
-        ▼
-Delta Calculation
-        │
-        ▼
-Change Detection
-        │
-        ▼
-GeoTIFF Export
-```
+Both composites use 4 scenes (2021-07-06 to 2021-08-10 and 2024-07-30 to
+2024-08-29). Their average dates are 24 days apart, so the tool prints a
+phenology warning: part of the change on the fields is simply a different
+point in the growing season.
+
+## How it works
+
+1. Search Sentinel-2 L2A scenes for the same season in both years.
+2. Pick acquisition days so that every tile in the area gets the same dates.
+3. Mask clouds, shadows and snow per pixel with the Scene Classification Layer (SCL).
+4. Compute the index for every scene and take the median per pixel.
+5. Subtract the baseline composite from the comparison composite.
+6. Count pixels above a fixed or per-pixel threshold and export the result.
+
+## Project structure
+
+| File | Purpose |
+| --- | --- |
+| `ndvi_core.py` | Index calculation, offset correction, cloud mask, median, thresholds, statistics |
+| `data_access.py` | Scene search and selection, loading both years onto one grid |
+| `main.py` | Command line tool |
+| `app.py` | Streamlit app |
+| `plotting.py` | The three-panel figure |
+| `export.py` | GeoTIFF export |
+| `geocoding.py` | Place search (Nominatim) |
+| `validation.py` | Checks against real events |
+| `tests/` | Offline tests |
 
 ## Features
 
-### Data Access
+- Sentinel-2 L2A data from the Microsoft Planetary Computer
+- Area selection by preset, place name (OpenStreetMap Nominatim) or bounding box
+- NDVI, NDWI and NBR
+- Per-pixel cloud masking and seasonal median composites
+- Both years on one shared UTM grid
+- Optional per-pixel threshold based on the scatter between scenes
+- GeoTIFF export with an observation count band
+- Validation against real events, including a negative control region
+- 176 offline unit and integration tests, run in CI on Python 3.11 and 3.12
 
-- Sentinel-2 L2A imagery from the Microsoft Planetary Computer
-- Place-name search via OpenStreetMap Nominatim
-- Custom bounding boxes or predefined areas of interest
+## Validation
 
-### Processing
-
-- Seasonal median compositing
-- Pixel-level cloud masking using the Scene Classification Layer
-- NDVI, NDWI and NBR support
-- Automatic grid alignment across years
-- Per-tile scene selection
-- Adaptive thresholding based on observation scatter
-
-### Output
-
-- Streamlit dashboard
-- Command-line interface
-- GeoTIFF export
-- Observation count layer
-- Processing metadata
-
-### Quality Control
-
-- Validation against documented real-world events
-- Negative control region for bias detection
-- 157 automated tests
-
-## Does it actually work
-
-Unit tests only prove the arithmetic is consistent with itself. `validation.py`
-runs the whole thing against places where something documented happened:
+Unit tests only show that the code is consistent with itself. To check it
+against reality, `validation.py` runs the full pipeline on places where
+something documented happened. The latest run is saved in
+[validation_results.md](validation_results.md):
 
 | Case | Index | Period | Result |
 | --- | --- | --- | --- |
-| Camp Fire, Paradise CA | NBR | 2018 → 2019 | 66.3 % of the area dropped, mean −0.251 |
-| Same box, regrowth | NBR | 2019 → 2024 | 51.0 % recovered, mean +0.144 |
-| Kakhovka reservoir | NDWI | 2022 → 2024 | 93.0 % of the 2022 water is gone, mean −0.711 |
-| South Aral Sea, east basin | NDWI | 2018 → 2024 | 98.6 % of the 2018 water is gone, mean −0.695 |
-| Control: Great Sand Sea | NDVI | 2019 → 2024 | mean bias 0.0065, zero pixels changed |
+| Camp Fire, Paradise CA | NBR | 2018 → 2019 | 66.6 % of the area decreased, mean −0.252 |
+| Same box, regrowth | NBR | 2019 → 2024 | 50.9 % increased, mean +0.143 |
+| Kakhovka reservoir | NDWI | 2022 → 2024 | 92.7 % of the 2022 water is gone, mean −0.687 |
+| South Aral Sea, east basin | NDWI | 2018 → 2024 | 98.6 % of the 2018 water is gone, mean −0.693 |
+| Control: Great Sand Sea | NDVI | 2019 → 2024 | mean bias 0.0013, 0.0 % of pixels changed |
 
-The last row is the one I'd look at first. It's empty desert, nothing should
-change there, and a pipeline with a leftover calibration bias will cheerfully
-report change anyway. It's judged on the mean, not on how many pixels crossed
-a threshold — a 0.05 drift across the whole scene crosses no per-pixel ±0.1
-rule at all, but it's exactly the kind of bug that matters.
+All 5 cases pass their thresholds (defined in `validation.py`).
 
-The two Camp Fire rows use the same bounding box on purpose. The same ground
-has to drop after the fire and recover five seasons later, so a sign error
-can't pass both.
+How to read this:
 
-For the water cases the score is over pixels that *were* water in the baseline,
-not over the whole box. Scoring the whole box mostly measures how much farmland
-you happened to include; pad the box and the same real event scores worse.
+- **The desert control matters most.** Nothing should change there. If the
+  pipeline had a calibration bias, it would show up as a mean shift across the
+  whole scene, so the control is judged on the mean delta and not only on how
+  many pixels passed a threshold.
+- **Both Camp Fire rows use the same box.** The same ground has to drop after
+  the fire and recover later, so a sign error cannot pass both.
+- **Water cases are scored only over pixels that were water in the baseline.**
+  Scoring the whole box would mostly measure how much farmland the box happens
+  to contain.
 
-Things that had to be fixed: the control originally sat at
-28.4° E / 22.6° N, which looks like empty desert on a satellite image but is
-actually the East Uweinat centre-pivot irrigation scheme, airport and all. A
-control standing on farmland is useless. And the Aral Sea case needs a bigger
-imagery budget than the others (40 % cloud, 6 scenes per tile), there just
-aren't many clean scenes over that region.
+The first desert control I chose (28.4° E / 22.6° N) turned out to be the East
+Uweinat irrigation project, which looks like empty desert at first glance. I
+moved the control to open dune field in the Great Sand Sea. The Aral Sea case
+needs a larger imagery budget (40 % cloud, 6 scenes) because there are
+few clear scenes over that region.
 
-The boxes are approximate. Check them on a map before quoting any number.
+The bounding boxes are approximate. Check them on a map before quoting any
+number.
 
 ## Setup
 
@@ -118,150 +100,137 @@ The boxes are approximate. Check them on a map before quoting any number.
 git clone https://github.com/lubna-ishaq/satellite-change-detection.git
 cd satellite-change-detection
 
-python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
-streamlit run app.py     # the app
-python main.py --help    # the CLI
-python validation.py     # check it against real events
+streamlit run app.py                                 # the app
+python main.py --help                                # the CLI
+python validation.py --report validation_results.md  # real-data validation
 ```
 
-## Spectral Indices
+## Spectral indices
 
 All three are normalised differences, `(a - b) / (a + b)`:
 
-| | Bands | What it shows | A negative delta means |
+| Index | Bands | Shows | Negative delta means |
 | --- | --- | --- | --- |
 | NDVI | B08, B04 | vegetation | vegetation lost |
 | NDWI | B03, B08 | open water | water lost |
 | NBR | B08, B12 | burn severity | burned |
 
-Careful with NBR: this pipeline always computes *comparison minus baseline*, so
-a fire is a negative number. The dNBR you see in papers is the other way round.
+The pipeline always computes *comparison minus baseline*, so a fire gives a
+negative NBR delta. The dNBR used in most papers has the opposite sign.
 
-## Engineering Challenges
+## Problems I had to solve
 
-Most of the work here went into four problems. They all produce output that
-looks completely reasonable and is wrong.
+These issues all produce results that look plausible but are wrong.
 
-**The reflectance offset.** Since ESA Processing Baseline 04.00 — anything
-acquired from 2022-01-25 — L2A reflectance is stored with -1000 added to it. An
-index is a ratio, so this does *not* cancel out. Compare 2021 against 2024
-without fixing it and you get a smooth bias across the whole scene that looks
-exactly like real land cover change. This was the first version of this project
-and the reason the header image had to be redone.
+**Reflectance offset.** Since ESA processing baseline 04.00, L2A reflectance
+is stored with an offset of -1000. Because an index is a ratio, the offset does
+not cancel out. My first version ignored it, and the 2021 vs 2024 comparison
+showed a smooth bias over the whole scene that looked like real change. The
+pipeline now reads the processing baseline of each scene
+(`s2:processing_baseline`) and only falls back to the acquisition date
+(from 2022-01-25) when that property is missing. This also covers older scenes
+that ESA has reprocessed.
 
-**Cloud cover is per scene, not per pixel.** `eo:cloud_cover < 10%` tells you
-nothing about the pixel you care about. Everything goes through the Scene
-Classification Layer: cloud, cirrus, shadow, snow, saturated, no-data all get
-dropped. Water is kept deliberately, since a shrinking lake is the point.
+**Cloud cover is reported per scene.** A scene with `eo:cloud_cover < 10` can
+still be cloudy over the area you care about. Every pixel goes through the SCL
+mask, which removes cloud, cirrus, shadow, snow, saturated and no-data pixels.
+Water is kept on purpose.
 
-**Two years, two grids.** Scenes from different years can sit on different
-tiles and different native grids. Both seasons get loaded onto one GeoBox in
-the local UTM zone, so pixel (i, j) is the same patch of ground in both. If
-that ever breaks, `calculate_index_delta` raises instead of quietly
-broadcasting garbage. UTM and not Web Mercator, by the way — a "20 m" pixel in
-EPSG:3857 is about 13.6 m on the ground at 47° N.
+**Different grids.** Scenes from different years can come from different tiles
+and grids. Both seasons are loaded onto one grid in the local UTM zone, so pixel
+(i, j) is the same ground in both years. If the shapes ever differ,
+`calculate_index_delta` raises an error instead of broadcasting. I use UTM
+because a "20 m" pixel in Web Mercator (EPSG:3857) is only about 13.6 m on the
+ground at 47° N.
 
-**Scene budgets are per tile.** If your area is
-wider than about 110 km it spans several Sentinel-2 tiles, and sorting all
-candidates by cloud cover can hand you four scenes that all belong to the same
-tile. The rest of your area then has no data at all, gets masked out, and the
-result still looks fine, until you notice the valid-pixel fraction is 23 % and
-there's a suspiciously straight edge in the delta.
+**Tile edges.** Areas can span several Sentinel-2 tiles. An earlier version let
+each tile pick its own clearest scenes, so each tile had different dates and
+the delta showed rectangular blocks along the tile edges. This was most
+visible over water. Scene selection now works on acquisition days: if there are
+days on which every tile has a usable scene, only those days are used, even if
+that means fewer scenes. Only when no such day exists does each tile get its
+own dates.
 
-Two smaller things: NaN is the no-data value everywhere, never 0 (0 is a
-perfectly good NDVI for bare soil, and using it as a flag poisons every
-average), and the index is a median across several scenes rather than a single
-date, because one date mostly measures that day's weather.
+Two smaller points: NaN is used for missing data everywhere, never 0, because 0
+is a valid NDVI for bare soil. And the index is a median over several scenes,
+because a single date mostly reflects that day's weather.
 
-## Reliability Metrics
+## Reliability layers
 
-Each composite carries two extra layers: how many scenes actually reached each
-pixel, and how much those scenes disagreed.
+Each composite also stores how many scenes reached each pixel and how much
+those scenes disagreed (median absolute deviation).
 
-The count ships as band 2 of the GeoTIFF. A pixel built from one observation
-looks identical to one built from six in the composite itself, which is not
-great.
+- The observation count is written as band 2 of the GeoTIFF, so you can see
+  which pixels are based on only one scene.
+- The scatter is used by `--adaptive-threshold`, which replaces the fixed ±0.1
+  with `sigma × scatter` per pixel. Pixels with too few observations get the
+  scene's typical threshold, not the lower floor.
+- The CLI and the app warn when the average dates of the two composites are more
+  than 21 days apart, because then part of the delta is seasonal growth.
 
-The disagreement feeds `--adaptive-threshold`, which swaps the fixed ±0.1 for
-`sigma × scatter` per pixel. One constant is wrong twice over: too low on noisy
-bare ground, too high over a stable canopy where a small real change gets
-buried. Pixels with too few observations to measure scatter get the scene's
-typical threshold rather than the floor, giving the worst-observed pixels the
-easiest bar would be backwards.
+## Export
 
-The composites also report their mean day-of-year, and warn if the two are more
-than three weeks apart. A mid-June composite against a late-August one is
-measuring the growing season at least as much as it's measuring change.
-
-
-## Exporting
-
-`--geotiff PATH` on the CLI, or the download button in the app. Float32, proper
-CRS and transform, NaN nodata, provenance in the tags, plus the observation
-count as a second band.
+Use `--geotiff PATH` on the CLI or the download button in the app. The file is
+Float32 with CRS, transform, NaN as no-data, processing metadata in the tags,
+and the observation count as band 2.
 
 ```bash
 python main.py --index NBR --bbox -121.70 39.68 -121.50 39.86 \
     --baseline-year 2018 --comparison-year 2019 --geotiff camp_fire.tif
 ```
 
-## CLI flags
+## CLI options
 
-| Flag | Default | |
+| Flag | Default | Notes |
 | --- | --- | --- |
 | `--baseline-year` | 2021 | |
 | `--comparison-year` | 2024 | |
 | `--index` | NDVI | NDVI, NDWI or NBR |
-| `--season` | `06-01:08-31` | applied to both years |
+| `--season` | `06-01:08-31` | used for both years |
 | `--aoi` | Graz, Austria | see `data_access.AOI_PRESETS` |
-| `--bbox W S E N` | | EPSG:4326, overrides `--aoi` |
+| `--bbox W S E N` | | EPSG:4326, replaces `--aoi` |
 | `--resolution` | 20 | metres |
-| `--max-cloud` | 10 | percent, scene level |
-| `--max-scenes` | 6 | per tile |
+| `--max-cloud` | 10 | percent, per scene |
+| `--max-scenes` | 6 | acquisition days per season |
 | `--threshold` | 0.1 | |
-| `--adaptive-threshold` | off | per-pixel threshold instead |
+| `--adaptive-threshold` | off | per-pixel threshold |
 | `--sigma` | 2.0 | |
 | `--threshold-floor` | 0.05 | |
 | `--geotiff` | | also write a GeoTIFF |
 
-## Deploying
+## Deployment
 
-Streamlit Community Cloud, free: push the repo, pick `app.py` as the main file,
-deploy. `requirements.txt` is the build manifest, `.streamlit/config.toml` has
-the theme. No `packages.txt` needed — rasterio and pyproj bundle GDAL and PROJ
-in their wheels.
+The app can run on Streamlit Community Cloud: push the repo, choose `app.py`
+and deploy. `requirements.txt` is used as the build manifest, and
+rasterio and pyproj ship GDAL and PROJ in their wheels.
 
-Hosted instances run out of memory easily, so requests are capped at 40
-megapixels (`data_access.MAX_PIXELS`). Anything bigger gets refused with a note
-suggesting a coarser resolution.
+Memory is the main limit there (about 1 GB). The grid is capped at 40
+megapixels (`data_access.MAX_PIXELS`), but every scene of a composite is held
+in memory at once, so the peak grows with the number of scenes (roughly
+pixels × scenes × 37 bytes). The app shows a warning when a request is likely
+to exceed 1 GB, and the CLI prints the estimate.
 
-## What this won't do
+## Limitations
 
-- Indices saturate. Over dense canopy a big change in biomass barely moves NDVI.
-- Sun angle and phenology survive compositing. Treat a single-season delta as
-  a *candidate* for change, not proof of it.
-- No topographic or BRDF correction, so steep terrain keeps an illumination
-  bias.
-- SCL misses thin cloud edges and struggles with shadow over water.
+- Indices saturate: over dense forest, large biomass changes barely move NDVI.
+- Sun angle and plant growth differences remain after compositing. A delta
+  from one season is a candidate for change, not proof.
+- There is no terrain or BRDF correction, so steep slopes keep some
+  illumination bias.
+- SCL misses thin cloud edges and has trouble with shadows over water.
 - The default season is northern-hemisphere summer. Use `--season` elsewhere.
-- Place search goes through OSM Nominatim, which is for interactive lookups
-  only.
+- Place search uses the public Nominatim service, which is meant for occasional
+  interactive requests only.
 
-## Development and Testing
+## Development
 
-157 automated tests.
-
-The test suite runs completely offline. STAC access, imagery retrieval and
-geocoding are all stubbed for deterministic testing.
-
-```bash
-pytest --cov
-```
-
-`validation.py` is intentionally excluded from CI because it performs real
-online retrieval against external services.
+The tests run fully offline. STAC search, image loading and geocoding are
+replaced with stubs. `validation.py` needs real network access and is therefore
+not part of CI.
 
 ```bash
 pip install -r requirements-dev.txt
@@ -269,15 +238,11 @@ ruff check . && ruff format --check .
 pytest --cov
 ```
 
-## Future Work
+## Possible next steps
 
-Possible future extensions:
-
-- Multi-year trend analysis
-- Additional spectral indices
-- Interactive before/after comparison
-- Time-series visualisation
-- Automated reporting
+- Trends over more than two years
+- More spectral indices
+- Before/after slider in the app
 
 ## Stack
 

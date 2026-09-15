@@ -16,7 +16,7 @@ from ndvi_core import (
     to_reflectance,
 )
 
-# --- NDVI ----------------------------------------------------------------
+# NDVI
 
 
 def test_calculate_ndvi_basic():
@@ -27,7 +27,7 @@ def test_calculate_ndvi_basic():
 
 
 def test_zero_denominator_is_nan_not_zero():
-    """0 is a real NDVI value (bare soil), so it must not double as no-data."""
+    """0 is a valid NDVI (bare soil) and must not be treated as no data."""
     result = calculate_ndvi(np.array([[0, 100]]), np.array([[0, 300]]))
     assert np.isnan(result[0, 0])
     assert result[0, 1] == pytest.approx(0.5)
@@ -62,7 +62,7 @@ def test_mismatched_mask_shape_raises():
         calculate_ndvi(np.zeros((2, 2)), np.zeros((2, 2)), valid_mask=np.zeros((3, 3)))
 
 
-# --- Radiometric harmonisation -------------------------------------------
+# Radiometric harmonisation
 
 
 @pytest.mark.parametrize(
@@ -80,6 +80,23 @@ def test_needs_boa_offset(acquired, expected):
     assert needs_boa_offset(acquired) is expected
 
 
+@pytest.mark.parametrize(
+    "acquired, baseline, expected",
+    [
+        # reprocessed old scenes: the baseline counts, not the date
+        ("2019-07-01", "05.00", True),
+        ("2023-07-01", "03.01", False),
+        ("2024-07-01", "05.09", True),
+        ("2021-07-01", 4.0, True),
+        # unreadable or missing baseline: use the date
+        ("2021-07-01", "n/a", False),
+        ("2024-07-01", None, True),
+    ],
+)
+def test_processing_baseline_takes_precedence(acquired, baseline, expected):
+    assert needs_boa_offset(acquired, baseline) is expected
+
+
 def test_to_reflectance_applies_offset():
     dn = np.array([[3000.0]])
     without = to_reflectance(dn, apply_offset=False)
@@ -95,11 +112,8 @@ def test_to_reflectance_treats_zero_as_nodata():
 
 
 def test_missing_offset_biases_ndvi():
-    """Regression guard for the bug this correction exists to prevent.
-
-    The same ground target, imaged before and after the Baseline 04.00
-    cutover, must yield the same NDVI once harmonised — and a visibly
-    different one if the offset is skipped.
+    """Same ground before and after baseline 04.00 must give the same NDVI
+    with the offset correction, and a different one without it.
     """
     red_old, nir_old = np.array([[1200.0]]), np.array([[3500.0]])
     red_new, nir_new = red_old + 1000.0, nir_old + 1000.0  # same target, new baseline
@@ -121,7 +135,7 @@ def test_missing_offset_biases_ndvi():
     assert abs(naive[0, 0] - reference[0, 0]) > 0.1
 
 
-# --- SCL masking ---------------------------------------------------------
+# SCL masking
 
 
 def test_scl_valid_mask_rejects_cloud_shadow_and_snow():
@@ -136,7 +150,7 @@ def test_water_is_kept_by_default():
     assert 6 in DEFAULT_VALID_SCL_CLASSES
 
 
-# --- Delta ---------------------------------------------------------------
+# Delta
 
 
 def test_calculate_ndvi_delta():
@@ -148,12 +162,12 @@ def test_calculate_ndvi_delta():
 
 
 def test_delta_refuses_to_broadcast_mismatched_grids():
-    """Silent broadcasting would compare unrelated ground locations."""
+    """Different shapes must raise an error instead of broadcasting."""
     with pytest.raises(ValueError, match="same grid"):
         calculate_ndvi_delta(np.zeros((4, 4)), np.zeros((4, 1)))
 
 
-# --- Compositing ---------------------------------------------------------
+# Compositing
 
 
 def test_median_composite_ignores_nan():
@@ -172,7 +186,7 @@ def test_median_composite_rejects_2d_input():
         median_composite(np.zeros((4, 4)))
 
 
-# --- Statistics ----------------------------------------------------------
+# Statistics
 
 
 def test_change_statistics_counts_only_valid_pixels():

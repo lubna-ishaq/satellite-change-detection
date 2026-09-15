@@ -1,9 +1,8 @@
-"""Georeferenced raster export.
+"""Export the result as a GeoTIFF.
 
-A PNG is a picture; a GeoTIFF is data. Writing the delta with its CRS and
-affine transform is what lets the result be opened in QGIS or ArcGIS,
-stacked against other layers, and measured — which is the difference
-between a demo and something an analyst can use.
+A PNG only shows the result. A GeoTIFF also stores where each pixel is on
+the ground (CRS and transform), so it can be opened in QGIS or ArcGIS and
+combined with other map layers.
 """
 
 from __future__ import annotations
@@ -15,16 +14,16 @@ import rasterio
 from rasterio.crs import CRS
 from rasterio.transform import Affine
 
-#: float32 keeps files half the size of float64 at ~7 significant digits,
-#: far more than a normalised index (range [-1, 1]) can carry.
+# float32 is precise enough for index values between -1 and 1
+# and makes the file half as big as float64.
 DTYPE = "float32"
 
-#: NaN as nodata is what GDAL-aware software expects for float rasters.
+# GIS tools expect NaN as the no-data value for float rasters.
 NODATA = float("nan")
 
 
 def _as_bands(arrays) -> list:
-    """Accept a single raster or a list of them."""
+    """Accept either one array or a list of arrays."""
     if isinstance(arrays, np.ndarray):
         return [arrays]
     return list(arrays)
@@ -41,7 +40,7 @@ def _profile(geobox, count: int = 1) -> dict:
         "transform": Affine(*geobox.transform[:6]),
         "nodata": NODATA,
         "compress": "deflate",
-        "predictor": 3,  # floating-point predictor, good for smooth rasters
+        "predictor": 3,  # compresses float data better
         "tiled": True,
         "blockxsize": 256,
         "blockysize": 256,
@@ -77,11 +76,10 @@ def write_geotiff(
     band_description="delta",
     metadata: dict | None = None,
 ) -> None:
-    """Write a georeferenced raster to ``path``.
+    """Write one or more bands as a GeoTIFF file.
 
-    ``array`` may be one raster or several. Passing the delta together with
-    the per-pixel observation count is what lets a reader in QGIS tell a
-    confident pixel from a thinly observed one.
+    I usually pass the delta plus the observation count, so in QGIS you can
+    check how many scenes each pixel is based on.
     """
     bands = _validate(_as_bands(array), geobox)
     descriptions = (
@@ -100,7 +98,7 @@ def geotiff_bytes(
     band_description="delta",
     metadata: dict | None = None,
 ) -> bytes:
-    """Same as :func:`write_geotiff` but into memory, for a download button."""
+    """Same as write_geotiff, but returns the file as bytes (for the app download)."""
     bands = _validate(_as_bands(array), geobox)
     descriptions = (
         [band_description]

@@ -30,7 +30,7 @@ def test_figure_has_three_panels_and_three_colorbars(rasters):
 
 
 def test_figure_marks_nodata_distinctly(rasters):
-    """Cloud gaps must not render as 'no change' in the delta panel."""
+    """Cloud gaps must not look like 'no change' in the plot."""
     baseline, comparison = rasters
     figure = build_comparison_figure(
         baseline, comparison, comparison - baseline, "2021", "2024"
@@ -53,7 +53,7 @@ def test_format_statistics_handles_fully_masked_input():
     assert "No valid pixels" in text
 
 
-# --- Index-aware labelling ----------------------------------------------
+# Index-aware labelling
 
 
 @pytest.mark.parametrize(
@@ -65,7 +65,7 @@ def test_format_statistics_handles_fully_masked_input():
     ],
 )
 def test_delta_panel_names_what_the_index_measures(rasters, index, expected):
-    """An NDWI map must not be labelled 'vegetation loss'."""
+    """An NDWI plot must not say 'vegetation loss'."""
     baseline, comparison = rasters
     figure = build_comparison_figure(
         baseline, comparison, comparison - baseline, "2021", "2024", index=index

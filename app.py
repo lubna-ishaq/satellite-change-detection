@@ -1,4 +1,4 @@
-"""Streamlit front end for the Sentinel-2 change detection pipeline.
+"""Streamlit app for the Sentinel-2 change detection.
 
 Run with:  streamlit run app.py
 """
@@ -13,8 +13,10 @@ import streamlit as st
 
 from data_access import (
     AOI_PRESETS,
+    HOSTED_MEMORY_BYTES,
     AreaTooLargeError,
     build_geobox,
+    estimate_peak_memory,
     load_season_composite,
     open_catalog,
 )
@@ -51,12 +53,11 @@ st.caption(
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def _load(bbox, year, resolution, max_cloud, max_scenes, index_name, season):
-    """Cached loader.
+    """Load one year's composite, cached by Streamlit.
 
-    Scene downloads dominate the runtime, so results are memoised on the
-    parameters. The GeoBox is rebuilt from the same bbox and resolution, which
-    makes it deterministic and therefore safe to cache per year: both seasons
-    still land on an identical grid.
+    Downloading takes most of the time, so the result is cached per set of
+    parameters. The grid is built from the same bbox and resolution every
+    time, so both years still end up on the same grid.
     """
     geobox = build_geobox(tuple(bbox), resolution=resolution)
     composite = load_season_composite(
@@ -131,8 +132,7 @@ with st.sidebar:
         st.session_state.area_label = "custom bbox"
 
     st.header("Index")
-    # sorted() puts NBR first alphabetically; the default must be the
-    # project default, not whatever happens to sort first.
+    # sorted() would put NBR first, so set the default index explicitly
     index_names = sorted(INDICES)
     index_name = st.selectbox(
         "Spectral index", index_names, index=index_names.index(DEFAULT_INDEX)
@@ -177,10 +177,9 @@ with st.sidebar:
         threshold = st.slider("Change threshold", 0.02, 0.40, 0.10, step=0.01)
 
     if st.button("Run analysis", type="primary", use_container_width=True):
-        # A st.button value lives for exactly one rerun. The folium map is a
-        # custom component and triggers a rerun of its own right after the
-        # click, which would silently swallow the request. Latch it in session
-        # state instead, so the analysis survives that second pass.
+        # st.button is only True for one rerun, and the folium map triggers
+        # another rerun right after the click. Without session_state the
+        # click would get lost.
         st.session_state.analysis_requested = True
 
     run = st.session_state.get("analysis_requested", False)
@@ -197,15 +196,23 @@ except ValueError as exc:
     st.error(f"Invalid area: {exc}")
     st.stop()
 
+peak_memory = estimate_peak_memory(geobox, max_scenes)
+if peak_memory > HOSTED_MEMORY_BYTES:
+    st.warning(
+        f"This request needs roughly {peak_memory / 1e9:.1f} GB of memory. "
+        "A free hosted instance has about 1 GB, so use fewer scenes, a coarser "
+        "resolution or a smaller area."
+    )
+
 if baseline_year >= comparison_year:
     st.warning(
-        "The baseline year is not earlier than the comparison year — the delta "
+        "The baseline year is not earlier than the comparison year, so the delta "
         "will read backwards in time."
     )
 
 if not run:
     st.info(
-        f"**{area_label}** — {geobox.shape.x} x {geobox.shape.y} px at "
+        f"**{area_label}**: {geobox.shape.x} x {geobox.shape.y} px at "
         f"{resolution} m ({geobox.crs}). Press **Run analysis** in the sidebar."
     )
     if HAS_MAP:
@@ -362,12 +369,12 @@ with st.expander("Delta distribution and provenance"):
     formula = f"({spec.band_a} − {spec.band_b}) / ({spec.band_a} + {spec.band_b})"
     grid = (
         f"{geobox.shape.x} × {geobox.shape.y} px at {resolution} m, "
-        f"{geobox.crs} — identical for both years"
+        f"{geobox.crs}, same for both years"
     )
     st.markdown(
         f"""
 - **Index:** {spec.name} = {formula}
-- **Area:** {area_label} — bbox `{tuple(round(v, 4) for v in bbox)}`
+- **Area:** {area_label}, bbox `{tuple(round(v, 4) for v in bbox)}`
 - **Season:** {season_tuple[0]} to {season_tuple[1]}, both years
 - **Baseline:** {baseline_n} scene(s), {baseline_dates}
 - **Comparison:** {comparison_n} scene(s), {comparison_dates}

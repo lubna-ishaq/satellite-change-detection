@@ -12,7 +12,8 @@ htmlcov/
 # Generated figures are ignored, except the README header image which is
 # regenerated with:
 #   python main.py --baseline-year 2021 --comparison-year 2024 \
-#       --aoi "Neusiedler See, Austria" --max-scenes 4
+#       --aoi "Neusiedler See, Austria" --max-scenes 4 --max-cloud 20 \
+#       --season 07-01:08-31
 *.png
 !change_detection_vergleich.png
 
