@@ -8,8 +8,7 @@ Compares two seasons of Sentinel-2 imagery and shows what changed. Vegetation
 (NDVI), open water (NDWI) or burn scars (NBR). Runs as a Streamlit app or from
 the command line, and exports a GeoTIFF you can drop into QGIS.
 
-Imagery comes from the Microsoft Planetary Computer, which is free and needs no
-account.
+Imagery comes from the Microsoft Planetary Computer, which is free and availabe to the public.
 
 The picture above:
 
@@ -45,7 +44,7 @@ All three are normalised differences, `(a - b) / (a + b)`:
 Careful with NBR: this pipeline always computes *comparison minus baseline*, so
 a fire is a negative number. The dNBR you see in papers is the other way round.
 
-## The things that will bite you
+## Problems along the way
 
 Most of the work here went into four problems. They all produce output that
 looks completely reasonable and is wrong.
@@ -69,11 +68,11 @@ that ever breaks, `calculate_index_delta` raises instead of quietly
 broadcasting garbage. UTM and not Web Mercator, by the way — a "20 m" pixel in
 EPSG:3857 is about 13.6 m on the ground at 47° N.
 
-**Scene budgets are per tile.** This one cost me an afternoon. If your area is
+**Scene budgets are per tile.** If your area is
 wider than about 110 km it spans several Sentinel-2 tiles, and sorting all
 candidates by cloud cover can hand you four scenes that all belong to the same
 tile. The rest of your area then has no data at all, gets masked out, and the
-result still looks fine — until you notice the valid-pixel fraction is 23 % and
+result still looks fine, until you notice the valid-pixel fraction is 23 % and
 there's a suspiciously straight edge in the delta.
 
 Two smaller things: NaN is the no-data value everywhere, never 0 (0 is a
@@ -81,7 +80,7 @@ perfectly good NDVI for bare soil, and using it as a flag poisons every
 average), and the index is a median across several scenes rather than a single
 date, because one date mostly measures that day's weather.
 
-## Knowing how much to trust a pixel
+## Pixels
 
 Each composite carries two extra layers: how many scenes actually reached each
 pixel, and how much those scenes disagreed.
@@ -94,7 +93,7 @@ The disagreement feeds `--adaptive-threshold`, which swaps the fixed ±0.1 for
 `sigma × scatter` per pixel. One constant is wrong twice over: too low on noisy
 bare ground, too high over a stable canopy where a small real change gets
 buried. Pixels with too few observations to measure scatter get the scene's
-typical threshold rather than the floor — giving the worst-observed pixels the
+typical threshold rather than the floor, giving the worst-observed pixels the
 easiest bar would be backwards.
 
 The composites also report their mean day-of-year, and warn if the two are more
@@ -128,11 +127,11 @@ For the water cases the score is over pixels that *were* water in the baseline,
 not over the whole box. Scoring the whole box mostly measures how much farmland
 you happened to include; pad the box and the same real event scores worse.
 
-Two things I got wrong and had to fix: the control originally sat at
+Things that had to be fixed: the control originally sat at
 28.4° E / 22.6° N, which looks like empty desert on a satellite image but is
 actually the East Uweinat centre-pivot irrigation scheme, airport and all. A
 control standing on farmland is useless. And the Aral Sea case needs a bigger
-imagery budget than the others (40 % cloud, 6 scenes per tile) — there just
+imagery budget than the others (40 % cloud, 6 scenes per tile), there just
 aren't many clean scenes over that region.
 
 The boxes are approximate. Check them on a map before quoting any number.
