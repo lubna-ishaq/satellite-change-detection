@@ -1,10 +1,10 @@
-## Current Capabilities
+## Future Ideas
 
-- Vegetation change detection (NDVI)
-- Water change detection (NDWI)
-- Burn-scar analysis (NBR)
-- Cloud masking
-- Seasonal compositing
-- GeoTIFF export
-- Interactive Streamlit dashboard
-- Validation against documented real-world events
+Potential future extensions:
+
+- Deforestation monitoring
+- Urban growth detection
+- Flood impact assessment
+- Infrastructure change analysis
+- Machine-learning assisted classification
+- Deep-learning based land-cover detection
